@@ -5,15 +5,15 @@ import ssl
 os.environ["KERAS_BACKEND"] = "tensorflow"
 
 #import keras
-from keras import layers
+#from keras import layers
 
-import matplotlib.pyplot as plt
+#import matplotlib.pyplot as plt
 import numpy as np
 import random
 import tensorflow as tf
 import tensorflow_datasets as tfds
-import pytesseract
-import easyocr
+#import pytesseract
+#import easyocr
 
 import pyqtgraph as pg
 
