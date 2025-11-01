@@ -1,6 +1,6 @@
 # Python
 __pycache__/
-*.py[cod]
+# *.py[cod]
 *.so
 # Virtual envs
 venv*/
@@ -20,9 +20,9 @@ models/captcha_images_v2/
 models/captcha_train/
 models/sensebike/
 # Large model files and images
-models/*.jpeg
-models/*.jpg
-models/*.png
-models/*.json
+# models/*.jpeg
+# models/*.jpg
+# models/*.png
+# models/*.json
 # IDE
 .vscode/
