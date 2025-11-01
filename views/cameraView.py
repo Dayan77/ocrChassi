@@ -220,6 +220,7 @@ class CameraView(QtWidgets.QWidget):
             if filename.lower().endswith(image_extensions):
                 image_files.append(os.path.join(self.images_folder, filename))
         return image_files
+    
 
 
     def search_annotation_file(self, image_file):

@@ -31,6 +31,7 @@ class ProgramView(QtWidgets.QWidget):
 
         self.resize_views(width, height)
         
+        
 
        
         self.layout_data = QtWidgets.QWidget()
