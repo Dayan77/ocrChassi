@@ -4,7 +4,7 @@ import ssl
 
 os.environ["KERAS_BACKEND"] = "tensorflow"
 
-import keras
+#import keras
 from keras import layers
 
 import matplotlib.pyplot as plt
