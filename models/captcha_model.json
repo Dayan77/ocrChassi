@@ -1,0 +1,11 @@
+{
+    "model_name": "captcha_model",
+    "model_filename": "/Users/dayansantos/Dev/ocrChassi/models/captcha_model.json",
+    "encoder_filename": "/Users/dayansantos/Dev/ocrChassi/models/captcha_model.h5",
+    "model_train_dataset": "/Users/dayansantos/Dev/ocrChassi/models/captcha_train",
+    "model_test_dataset": "/Users/dayansantos/Dev/ocrChassi/models/captcha_test",
+    "model_classes": "abcdefghijklmnopqrstuvwxyz0123456789",
+    "train_epochs": "100",
+    "image_height": "31",
+    "image_width": "31"
+}
