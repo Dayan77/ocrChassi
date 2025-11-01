@@ -1,0 +1,7 @@
+<RCC>
+  <qresource prefix="images">
+    <file>images/No_Image_Available.jpg</file>
+    <file>images/SWIFT_BRANCO.png</file>
+    <file>images/uea.png</file>
+  </qresource>
+</RCC>
