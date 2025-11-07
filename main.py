@@ -1,15 +1,21 @@
 import sys
 from PySide6.QtWidgets import QMainWindow, QApplication, QPushButton, QVBoxLayout, QHBoxLayout, QGridLayout, QWidget
 from PySide6.QtCore import Slot, QFile, QTextStream
+from PySide6.QtGui import QPalette, QColor
 
 from sidebar_ui import Ui_MainWindow
 from views.cameraView  import CameraView
 from views.programView import ProgramView 
 
+import images_rc
+import resource_rc
+import icons_rc
+
 import config_ini
 
 class MainWindow(QMainWindow):
     program_view = None
+    
     def __init__(self):
         super(MainWindow, self).__init__()
 
@@ -17,8 +23,17 @@ class MainWindow(QMainWindow):
         self.ui.setupUi(self)
 
         self.ui.icon_only_widget.hide()
+        
         self.ui.stackedWidget.setCurrentIndex(6)
         self.ui.home_btn_2.setChecked(True)
+
+        # Set text color for logo_label_3
+        _translate = self.ui.centralwidget.tr
+        self.ui.logo_label_3.setText(_translate("MainWindow", config_ini.app_title))
+        palette = self.ui.logo_label_3.palette()
+        palette.setColor(QPalette.WindowText, QColor(255, 0, 0))
+        self.ui.logo_label_3.setPalette(palette)
+
 
     def resizeEvent(self, event):
         # Get the new size from the event object
@@ -66,20 +81,21 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def on_dashboard_btn_1_toggled(self):
-        #Cameras view box
-        
-        entire_view = QWidget()
-        entire_widget = QGridLayout(entire_view)
-        self.program_view = ProgramView(self.width()-90, self.height()-70)
-        
-        self.program_view.create_views(config_ini.cam_qty)
-        
-        self.ui.stackedWidget.addWidget(self.program_view)
+        # Lazy load the ProgramView the first time it's needed
+        if not self.program_view:
+            self.program_view = ProgramView(self.width() - 90, self.height() - 70)
+            self.program_view.create_views(config_ini.cam_qty)
+            self.ui.stackedWidget.insertWidget(1, self.program_view)
+        self.ui.stackedWidget.setCurrentIndex(1)
 
     @Slot()
     def on_dashboard_btn_2_toggled(self):
-        #self.ui.stackedWidget.setCurrentIndex(1)
-        self.on_dashboard_btn_1_toggled()
+        # Lazy load the ProgramView the first time it's needed
+        if not self.program_view:
+            self.program_view = ProgramView(self.width() - 90, self.height() - 70)
+            self.program_view.create_views(config_ini.cam_qty)
+            self.ui.stackedWidget.insertWidget(1, self.program_view)
+        self.ui.stackedWidget.setCurrentIndex(1)
 
     def on_orders_btn_1_toggled(self):
         self.ui.stackedWidget.setCurrentIndex(2)

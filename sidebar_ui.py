@@ -281,14 +281,7 @@ class Ui_MainWindow(object):
     def retranslateUi(self, MainWindow):
         _translate = QtCore.QCoreApplication.translate
         MainWindow.setWindowTitle(_translate("MainWindow", "SENSE BIKE - Chassi Reader"))
-        
-        palette = self.logo_label_3.palette()
-        # Change the foreground (text) color to red
-        palette.setColor(QPalette.WindowText, QColor(255, 0, 0))
-        self.logo_label_3.setPalette(palette)
         self.logo_label_3.setText(_translate("MainWindow", "MainWindow"))
-
-
         
         self.home_btn_2.setText(_translate("MainWindow", "Home"))
         self.dashborad_btn_2.setText(_translate("MainWindow", "Modelos"))
@@ -305,4 +298,3 @@ class Ui_MainWindow(object):
         # self.label_9.setText(_translate("MainWindow", "Search Page"))
         # self.label_10.setText(_translate("MainWindow", "User Page"))
         # self.stackedWidget.setCurrentIndex(6)
-import resource_rc

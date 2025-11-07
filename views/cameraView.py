@@ -453,6 +453,7 @@ class CameraView(QtWidgets.QWidget):
         
         
         samples = {}
+        # self.image_chars = ""
         i = 0
         for _roi in self.rois:
             x = int(_roi.state['pos'].x())
@@ -470,8 +471,12 @@ class CameraView(QtWidgets.QWidget):
                 else:
                     char = chars[i]
             
-            samples.update({str(i):{ "char": char, "box":{"x":x,"y":y,"w":w,"h":h}, "image":char_img} })
+            samples.update({str(i):{ "char": self.image_chars[i], "box":{"x":x,"y":y,"w":w,"h":h}, "image":char_img} })
             i += 1
+
+
+            # self.image_chars += char
+
         return samples
     
     def refresh_rois_dict(self, chars):

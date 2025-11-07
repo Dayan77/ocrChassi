@@ -27,25 +27,25 @@ from PySide6.QtCore import Qt
 
 class pvVisionLib():
     
-    def test_pytesseract(self, img):
-        image_path = img#"/mnt/data/08d702e9-fb88-4a5b-98ce-9ad0bc19afd9.png"
-        image = cv2.imread(image_path)
-        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    # def test_pytesseract(self, img):
+    #     image_path = img#"/mnt/data/08d702e9-fb88-4a5b-98ce-9ad0bc19afd9.png"
+    #     image = cv2.imread(image_path)
+    #     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-        #gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        print("Grayscale Image:")
-        cv2.imshow('test',image_rgb)
+    #     #gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    #     print("Grayscale Image:")
+    #     cv2.imshow('test',image_rgb)
 
-        extracted_text = pytesseract.image_to_string(image_rgb)
-        print(" Extracted Text:\n")
-        print(extracted_text)
+    #     extracted_text = pytesseract.image_to_string(image_rgb)
+    #     print(" Extracted Text:\n")
+    #     print(extracted_text)
 
-    def test_easyocr(self, img):
-        reader = easyocr.Reader(['en'])
-        extract_info = reader.readtext(img)
+    # def test_easyocr(self, img):
+    #     reader = easyocr.Reader(['en'])
+    #     extract_info = reader.readtext(img)
 
-        for el in extract_info:
-            print(el)
+    #     for el in extract_info:
+    #         print(el)
 
     def load_image_file(self, path):
         """Loads and preprocesses an image for segmentation."""

@@ -1,6 +1,6 @@
 import sys
 import qtawesome as qta
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import Qt, QSize, Signal, Slot
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QStackedWidget, QLabel, QListWidget, QListWidgetItem, QPushButton,
@@ -16,6 +16,9 @@ from PySide6.QtGui import QColor, QIcon, QPixmap
 from qt_material import apply_stylesheet
 
 import pv_visionlib
+from components.datasetview import DatasetView
+from components.trainingsummaryview import TrainingSummaryView
+#from components.trainingprocess import TrainingProcessDialog
 
 
 class CardModel(QWidget):
@@ -106,6 +109,7 @@ class TrainingCardContent(QWidget):
 
 class ModelView(QFrame):
 
+    jsonLoaded = Signal(str)
     def __init__(self, parent=None):
         super().__init__(parent)
         self.parent_wnd = parent
@@ -133,11 +137,49 @@ class ModelView(QFrame):
         self.tabs.addTab(self.tab_results, "Resultados")
 
         self.json_model = ModelJsonView(self.parent_wnd)
+        self.json_model.jsonLoaded.connect(self.jsonLoaded.emit)
+
+        # --- Integrate DatasetView into the "Anotações" tab ---
+        self.dataset_view = DatasetView()
+        edit_tab_layout = QVBoxLayout(self.tab_edit)
+        edit_tab_layout.setContentsMargins(0, 0, 0, 0)
+        edit_tab_layout.addWidget(self.dataset_view)
+
+        # --- Integrate TrainingSummaryView into the "Treinamento" tab ---
+        self.training_summary_view = TrainingSummaryView()
+        train_tab_layout = QVBoxLayout(self.tab_data)
+        train_tab_layout.addWidget(self.training_summary_view)
+        self.dataset_view.datasetLoaded.connect(self.update_training_summary)
+        self.training_summary_view.startTrainingClicked.connect(self.start_training)
 
         self.tab_config.setLayout(self.json_model)
 
+    @Slot()
+    def on_model_data_changed(self):
+        """Triggered after ProgramView loads new model data."""
+        if self.parent_wnd and self.parent_wnd.model_json.model:
+            train_path = self.parent_wnd.model_json.model.model_train_dataset
+            self.dataset_view.load_dataset(train_path)
+
+    def update_training_summary(self, dataset_summary):
+        """Slot to update the training summary view."""
+        model_data = self.parent_wnd.model_json.model
+        self.training_summary_view.update_summary(model_data, dataset_summary)
+
+    def start_training(self):
+        """Slot to initiate the training process."""
+        model_data = self.parent_wnd.model_json.model
+        if not model_data:
+            # You might want to show a QMessageBox here
+            print("No model data loaded.")
+            return
+        # dialog = TrainingProcessDialog(model_data, self)
+        # dialog.exec()
+
 
 class ModelJsonView(QVBoxLayout):
+    jsonLoaded = Signal(str)
+
     def __init__(self, parent_wnd = None):
         super().__init__(parent_wnd)
         self.parent_wnd = parent_wnd
@@ -472,10 +514,14 @@ class ModelJsonView(QVBoxLayout):
 
     def browse_train_folder(self):
         dir = self.open_dir()
+        if not dir:
+            return
         self.json_traindataset_edit.setText(dir.as_posix())
 
     def browse_test_folder(self):
         dir = self.open_dir()
+        if not dir:
+            return
         self.json_testdataset_edit.setText(dir.as_posix())
 
 
@@ -498,9 +544,8 @@ class ModelJsonView(QVBoxLayout):
         return filename
     
     def load_json_file(self, filename):
-        self.parent_wnd.model_json.load_from_file(filename)
-
-        self.update_json_values()
+        
+        self.jsonLoaded.emit(filename)
 
     def update_json_values(self):
         self.json_modelname_edit.setText(self.parent_wnd.model_json.model.model_name)
@@ -512,11 +557,11 @@ class ModelJsonView(QVBoxLayout):
         self.json_epochs_edit.setValue(int(self.parent_wnd.model_json.model.train_epochs))
         self.json_imageheight_edit.setValue(int(self.parent_wnd.model_json.model.image_height))
         self.json_imagewidth_edit.setValue(int(self.parent_wnd.model_json.model.image_width))
+
+         
     
 
 
 
 
         
-
-

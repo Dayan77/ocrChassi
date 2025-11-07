@@ -11,10 +11,11 @@ from components.modeljson import ModelJson
 import config_ini
 
 class ProgramView(QtWidgets.QWidget):
+    modelDataChanged = Signal()
     cameras = []
     camera_width = 0
     camera_height = 0
-    model_json = None
+    model_json = ModelJson()
     
     def __init__(self, width, height):
         super().__init__()
@@ -54,6 +55,8 @@ class ProgramView(QtWidgets.QWidget):
         card_model.setMaximumHeight((height/2)-10)
         card_model.setMinimumHeight((height/2)-10)
         card_model_content =  TrainingCardContent(self)
+        self.modelDataChanged.connect(card_model_content.model_train_box.on_model_data_changed)
+        card_model_content.model_train_box.json_model.jsonLoaded.connect(self.on_json_loaded)
         card_model_content.title_label.setText("Treinamento de modelos IA")
         card_model.set_content(card_model_content)
         
@@ -70,7 +73,14 @@ class ProgramView(QtWidgets.QWidget):
         self.camera_width = int((width/2)-60)
         self.camera_height = int(height/2)
         
-
+    @Slot(str)
+    def on_json_loaded(self, filename):
+        """Handles loading the JSON file and updating UI components."""
+        self.model_json.load_from_file(filename)
+        # Find the ModelJsonView and update its fields
+        self.findChild(ModelView).json_model.update_json_values()
+        self.modelDataChanged.emit()
+        
 
     def create_views(self, qty):
         #layout_cams = QtWidgets.QVBoxLayout()
