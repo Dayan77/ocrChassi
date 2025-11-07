@@ -1,10 +1,9 @@
 
 import json
 from dataclasses import dataclass, asdict
-from typing import List
+from typing import List, Optional
 
-
-
+import config_ini
 
 
 @dataclass
@@ -18,12 +17,22 @@ class ModelAi():
     train_epochs: int
     image_height: int
     image_width: int
+    
+    def get_model_save_path(self) -> str:
+        """Returns the full path where the Keras model should be saved."""
+        return config_ini.MODEL_SAVE_PATH
+
+    def get_label_encoder_save_path(self) -> str:
+        """Returns the full path where the label encoder should be saved."""
+        return self.encoder_filename if self.encoder_filename else config_ini.LABEL_ENCODER_SAVE_PATH
+
 
     
 
 class ModelJson():
     model = None
-    def create_model(self, model_name, model_filename, encoder_filename, model_train_dataset, model_test_dataset, model_classes, train_epochs, image_height, image_width):
+    def create_model(self, model_name: str, model_filename: str, encoder_filename: str, model_train_dataset: str, 
+                     model_test_dataset: str, model_classes: str, train_epochs: int, image_height: int, image_width: int):
         self.model = ModelAi(model_name=model_name, model_filename=model_filename, encoder_filename=encoder_filename, model_train_dataset=model_train_dataset,
                              model_test_dataset=model_test_dataset, model_classes=model_classes, train_epochs=train_epochs, image_height=image_height, image_width=image_width )
         

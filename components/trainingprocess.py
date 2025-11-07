@@ -1,5 +1,7 @@
+import os
 import sys
 import time
+import numpy as np
 from PySide6.QtCore import QObject, Signal, Slot, QThread, Qt
 from PySide6.QtWidgets import (
     QApplication,
@@ -13,27 +15,129 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
 )
 
-# This is a placeholder for your actual training logic.
-# You would replace the content of this function with your TensorFlow/Keras/PyTorch code.
-def train_model_placeholder(model_data, progress_callback, log_callback):
-    """Placeholder function to simulate model training."""
-    epochs = model_data.train_epochs
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2" # Suppress TensorFlow INFO messages
+
+try:
+    import tensorflow as tf
+    from tensorflow import keras
+    from tensorflow.keras import layers
+except ImportError:
+    print("TensorFlow/Keras not found. Training will not be available.")
+    tf = None
+
+
+class KerasProgressCallback(keras.callbacks.Callback):
+    """A Keras callback to update the UI during training."""
+    def __init__(self, progress_signal, log_signal):
+        super().__init__()
+        self.progress_signal = progress_signal
+        self.log_signal = log_signal
+
+    def on_epoch_end(self, epoch, logs=None):
+        logs = logs or {}
+        # Calculate progress based on epochs
+        progress_percent = int(((epoch + 1) / self.params['epochs']) * 100)
+        self.progress_signal.emit(progress_percent)
+
+        # Format and emit log message
+        log_message = f"Epoch {epoch+1}/{self.params['epochs']}"
+        for key, value in logs.items():
+            log_message += f" - {key}: {value:.4f}"
+        self.log_signal(log_message) # Corrected: Call the passed emit method directly
+
+
+def train_model_cnn(model_data, progress_callback, log_callback):
+    """
+    Trains a real CNN model based on the provided configuration.
+    """
+    if not tf:
+        log_callback("TensorFlow is not installed. Cannot proceed with training.")
+        return None
+
+    epochs = int(model_data.train_epochs)
+    img_height = int(model_data.image_height)
+    img_width = int(model_data.image_width)
+    train_dir = model_data.model_train_dataset
+    batch_size = 32
+
     log_callback(f"--- Starting Training: {model_data.model_name} ---\n")
-    log_callback(f"Dataset: {model_data.model_train_dataset}")
-    log_callback(f"Epochs: {epochs}\n")
-    time.sleep(1)
+    log_callback(f"Loading dataset from: {train_dir}")
+    log_callback(f"Image Dimensions: {img_width}x{img_height}, Epochs: {epochs}\n")
 
-    for epoch in range(1, epochs + 1):
-        # Simulate training for one epoch
-        time.sleep(0.5)
-        accuracy = 0.6 + (epoch / epochs) * 0.35 + (time.time() % 0.05)
-        loss = 1.0 - (epoch / epochs) * 0.8 + (time.time() % 0.05)
+    # --- 1. Load Dataset ---
+    try:
+        train_ds = tf.keras.utils.image_dataset_from_directory(
+            train_dir,
+            validation_split=0.2,
+            subset="training",
+            seed=123,
+            image_size=(img_height, img_width),
+            batch_size=batch_size,
+            color_mode='grayscale'
+        )
+        val_ds = tf.keras.utils.image_dataset_from_directory(
+            train_dir,
+            validation_split=0.2,
+            subset="validation",
+            seed=123,
+            image_size=(img_height, img_width),
+            batch_size=batch_size,
+            color_mode='grayscale'
+        )
+        class_names = train_ds.class_names
+        num_classes = len(class_names)
+        log_callback(f"Found {num_classes} classes: {', '.join(class_names)}\n")
+    except Exception as e:
+        log_callback(f"Error loading dataset: {e}")
+        return None
 
-        log_callback(f"Epoch {epoch}/{epochs} - loss: {loss:.4f} - accuracy: {accuracy:.4f}")
-        progress_callback.emit(int((epoch / epochs) * 100))
+    # --- 2. Create and Save Label Encoder (Class Names) ---
+    # TensorFlow's image_dataset_from_directory sorts class names alphabetically.
+    # We just need to save this list for later use during inference.
+    np.save(model_data.get_label_encoder_save_path(), np.array(class_names))
+    log_callback(f"Label mapping saved to: {model_data.get_label_encoder_save_path()}\n")
 
-    log_callback("\n--- Training Finished ---")
-    final_stats = {"final_accuracy": accuracy, "final_loss": loss}
+    # --- 3. Build CNN Model ---
+    model = keras.Sequential([
+        layers.Rescaling(1./255, input_shape=(img_height, img_width, 1)),
+        layers.Conv2D(16, 3, padding='same', activation='relu'),
+        layers.MaxPooling2D(),
+        layers.Conv2D(32, 3, padding='same', activation='relu'),
+        layers.MaxPooling2D(),
+        layers.Conv2D(64, 3, padding='same', activation='relu'),
+        layers.MaxPooling2D(),
+        layers.Flatten(),
+        layers.Dense(128, activation='relu'),
+        layers.Dense(num_classes, activation='softmax')
+    ])
+
+    model.compile(optimizer='adam',
+                  loss=tf.keras.losses.SparseCategoricalCrossentropy(),
+                  metrics=['accuracy'])
+    
+    model.summary(print_fn=lambda x: log_callback(x))
+
+    # --- 4. Train the Model ---
+    log_callback("\n--- Starting Model Fitting ---")
+    ui_callback = KerasProgressCallback(progress_callback, log_callback)
+    history = model.fit(
+        train_ds,
+        validation_data=val_ds,
+        epochs=epochs,
+        callbacks=[ui_callback],
+        verbose=0 # We use our custom callback for logging
+    )
+
+    # --- 5. Save the Model and Return Stats ---
+    model.save(model_data.get_model_save_path())
+    log_callback(f"\n--- Training Finished. Model saved to: {model_data.get_model_save_path()} ---")
+
+    final_stats = {
+        "final_accuracy": history.history['accuracy'][-1],
+        "final_loss": history.history['loss'][-1],
+        "final_val_accuracy": history.history['val_accuracy'][-1],
+        "final_val_loss": history.history['val_loss'][-1]
+    }
     return final_stats
 
 
@@ -53,7 +157,7 @@ class TrainingWorker(QObject):
     def run(self):
         """Starts the training process."""
         try:
-            stats = train_model_placeholder(self.model_data, self.progress, self.log.emit)
+            stats = train_model_cnn(self.model_data, self.progress, self.log.emit)
             self.finished.emit(stats)
         except Exception as e:
             self.log.emit(f"\n--- An error occurred ---\n{e}")
@@ -159,24 +263,24 @@ class TrainingProcessDialog(QDialog):
         event.accept()
 
 
-if __name__ == '__main__':
-    # Example of how to use the dialog
-    from components.modeljson import ModelAi
-    app = QApplication(sys.argv)
+# if __name__ == '__main__':
+#     # Example of how to use the dialog
+#     from components.modeljson import ModelAi
+#     app = QApplication(sys.argv)
 
-    # Create dummy model data
-    dummy_model_data = ModelAi(
-        model_name="TestCNN",
-        model_filename="test.h5",
-        encoder_filename="encoder.npy",
-        model_train_dataset="/path/to/train",
-        model_test_dataset="/path/to/test",
-        model_classes="ABC123",
-        train_epochs=20,
-        image_height=28,
-        image_width=28
-    )
+#     # Create dummy model data
+#     dummy_model_data = ModelAi(
+#         model_name="TestCNN",
+#         model_filename="test.h5",
+#         encoder_filename="encoder.npy",
+#         model_train_dataset="/path/to/train",
+#         model_test_dataset="/path/to/test",
+#         model_classes="ABC123",
+#         train_epochs=20,
+#         image_height=28,
+#         image_width=28
+#     )
 
-    dialog = TrainingProcessDialog(dummy_model_data)
-    dialog.exec()
-    sys.exit(0)
+#     dialog = TrainingProcessDialog(dummy_model_data)
+#     dialog.exec()
+#     sys.exit(0)
