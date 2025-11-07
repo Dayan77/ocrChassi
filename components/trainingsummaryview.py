@@ -77,8 +77,8 @@ class TrainingSummaryView(QWidget):
         font = self.start_button.font()
         font.setPointSize(12)
         font.setBold(True)
-        self.start_button.setFont(font)
-        self.start_button.clicked.connect(self.startTrainingClicked.emit)
+        self.start_button.setFont(font)        
+        self.start_button.clicked.connect(self.startTrainingClicked)
         self.start_button.setEnabled(False)
 
         actions_layout.addWidget(self.start_button)
@@ -101,7 +101,8 @@ class TrainingSummaryView(QWidget):
             self.encoder_path_edit.setText(model_data.encoder_filename)
             self.train_path_edit.setText(model_data.model_train_dataset)
             self.test_path_edit.setText(model_data.model_test_dataset)
-            self.classes_list_label.setText(f"<b>{model_data.model_classes}</b>")
+            # Join list of classes into a displayable string
+            self.classes_list_label.setText(f"<b>{''.join(model_data.model_classes)}</b>")
             self.start_button.setEnabled(True)
         else:
             self.model_name_label.setText("N/A")

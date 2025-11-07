@@ -1,5 +1,6 @@
 import os
 import sys
+import random
 import time
 import numpy as np
 from PySide6.QtCore import QObject, Signal, Slot, QThread, Qt
@@ -14,6 +15,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QHBoxLayout,
 )
+
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2" # Suppress TensorFlow INFO messages
 
@@ -108,7 +110,7 @@ def train_model_cnn(model_data, progress_callback, log_callback):
         layers.MaxPooling2D(),
         layers.Flatten(),
         layers.Dense(128, activation='relu'),
-        layers.Dense(num_classes, activation='softmax')
+        layers.Dense(int(num_classes), activation='softmax')
     ])
 
     model.compile(optimizer='adam',
@@ -138,16 +140,19 @@ def train_model_cnn(model_data, progress_callback, log_callback):
         "final_val_accuracy": history.history['val_accuracy'][-1],
         "final_val_loss": history.history['val_loss'][-1]
     }
-    return final_stats
+    
+    # Return both stats and the discovered class names
+    # The class names are sorted alphabetically by image_dataset_from_directory
+    return final_stats, class_names
 
 
 class TrainingWorker(QObject):
     """
     A worker that runs the training process in a separate thread.
     """
-    progress = Signal(int)
-    log = Signal(str)
-    finished = Signal(dict)
+    progress = Signal(int) # Emits training progress percentage
+    log = Signal(str)      # Emits log messages
+    finished = Signal(object)  # Emits a tuple (stats, class_names) when done
 
     def __init__(self, model_data):
         super().__init__()
@@ -157,17 +162,20 @@ class TrainingWorker(QObject):
     def run(self):
         """Starts the training process."""
         try:
-            stats = train_model_cnn(self.model_data, self.progress, self.log.emit)
-            self.finished.emit(stats)
+            stats, class_names = train_model_cnn(self.model_data, self.progress, self.log.emit)
+            self.finished.emit((stats, class_names))
         except Exception as e:
             self.log.emit(f"\n--- An error occurred ---\n{e}")
-            self.finished.emit({})
+            self.finished.emit(({}, []))
 
 
 class TrainingProcessDialog(QDialog):
     """
     A dialog to show the progress of the model training process.
     """
+    trainingCompleted = Signal(object) # Signal to emit a tuple (stats, class_names) to parent
+    validationTestCompleted = Signal(list) # Signal to emit validation results to parent
+
     def __init__(self, model_data, parent=None):
         super().__init__(parent)
         self.model_data = model_data
@@ -211,6 +219,7 @@ class TrainingProcessDialog(QDialog):
         self.worker.finished.connect(self.on_training_finished)
         self.worker.progress.connect(self.set_progress)
         self.worker.log.connect(self.append_log)
+        self.run_test_button.clicked.connect(self.run_validation_test)
 
         # Ensure thread and worker are deleted safely after finishing
         self.worker.finished.connect(self.worker.deleteLater)
@@ -229,30 +238,81 @@ class TrainingProcessDialog(QDialog):
         self.log_area.append(message)
 
     @Slot(dict)
-    def on_training_finished(self, stats):
+    def on_training_finished(self, result):
         """Handles the end of the training process."""
         self.thread.quit()
+        
+        stats, class_names = result
 
         if stats:
+            # Pass both stats and class_names to the parent
+            self.trainingCompleted.emit((stats, class_names))
             self.log_area.append("\n--- Training Statistics ---")
             for key, value in stats.items():
                 self.log_area.append(f"{key}: {value:.4f}")
             self.run_test_button.setEnabled(True)
         else:
+            # Emit empty results on failure
+            self.trainingCompleted.emit(({}, []))
             self.log_area.append("\nTraining failed. See logs for details.")
 
-        self.run_test_button.clicked.connect(self.run_validation_test)
-
     def run_validation_test(self):
-        """Placeholder for running the test on the validation set."""
+        """Loads the trained model and runs predictions on a subset of validation data."""
         self.log_area.append("\n--- Running Validation Test ---")
-        # In a real application, you would likely start another worker thread here.
-        # For this example, we'll just simulate it.
-        time.sleep(1)
-        self.log_area.append("Test Accuracy: 92.5%")
-        self.log_area.append("Test Loss: 0.2510")
-        self.log_area.append("\n--- Validation Finished ---")
         self.run_test_button.setEnabled(False)
+
+        if not tf:
+            self.log_area.append("TensorFlow is not installed. Cannot run validation.")
+            return
+
+        try:
+            # Load the trained model
+            model = keras.models.load_model(self.model_data.get_model_save_path())
+            # Get the class names directly from the model data that was updated after training
+            class_names = self.model_data.model_classes
+
+            # Ensure the dataset path is absolute
+            absolute_train_dir = os.path.abspath(self.model_data.model_train_dataset)
+
+            # Create a validation dataset
+            val_ds = tf.keras.utils.image_dataset_from_directory(
+                absolute_train_dir,
+                validation_split=0.2,
+                subset="validation",
+                seed=123,
+                image_size=(int(self.model_data.image_height), int(self.model_data.image_width)),
+                batch_size=1,
+                color_mode='grayscale'
+            )
+
+            results = []
+            # Take a small sample for display
+            for i, (images, labels) in enumerate(val_ds.unbatch().take(min(20, len(val_ds)))):
+                img_array = images.numpy().astype("uint8")
+                true_label_idx = labels.numpy()
+                true_label = class_names[true_label_idx]
+
+                img_for_prediction = np.expand_dims(img_array, axis=0)
+                prediction = model.predict(img_for_prediction, verbose=0)
+                predicted_label_idx = np.argmax(prediction[0])
+                predicted_label = class_names[predicted_label_idx]
+                confidence = np.max(prediction[0]) * 100
+
+                results.append({
+                    'image_array': img_array,
+                    'actual_label': true_label,
+                    'predicted_label': predicted_label,
+                    'confidence': confidence
+                })
+            
+            self.log_area.append(f"Generated {len(results)} validation samples.")
+            self.validationTestCompleted.emit(results)
+
+        except Exception as e:
+            self.log_area.append(f"Error during validation: {e}")
+            QMessageBox.critical(self, "Validation Error", f"An error occurred during validation:\n{e}")
+        finally:
+            self.run_test_button.setEnabled(True)
 
     def closeEvent(self, event):
         """Ensure the thread is stopped if the dialog is closed prematurely."""
@@ -261,26 +321,3 @@ class TrainingProcessDialog(QDialog):
             self.thread.quit() # Ask the event loop to stop
             self.thread.wait(500) # Wait a bit for it to finish
         event.accept()
-
-
-# if __name__ == '__main__':
-#     # Example of how to use the dialog
-#     from components.modeljson import ModelAi
-#     app = QApplication(sys.argv)
-
-#     # Create dummy model data
-#     dummy_model_data = ModelAi(
-#         model_name="TestCNN",
-#         model_filename="test.h5",
-#         encoder_filename="encoder.npy",
-#         model_train_dataset="/path/to/train",
-#         model_test_dataset="/path/to/test",
-#         model_classes="ABC123",
-#         train_epochs=20,
-#         image_height=28,
-#         image_width=28
-#     )
-
-#     dialog = TrainingProcessDialog(dummy_model_data)
-#     dialog.exec()
-#     sys.exit(0)

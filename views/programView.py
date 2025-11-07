@@ -55,8 +55,8 @@ class ProgramView(QtWidgets.QWidget):
         card_model.setMaximumHeight((height/2)-10)
         card_model.setMinimumHeight((height/2)-10)
         card_model_content =  TrainingCardContent(self)
-        self.modelDataChanged.connect(card_model_content.model_train_box.on_model_data_changed)
-        card_model_content.model_train_box.json_model.jsonLoaded.connect(self.on_json_loaded)
+        # Connect the jsonLoaded signal from the view to our slot for handling it
+        card_model_content.model_train_box.jsonLoaded.connect(self.on_json_loaded)
         card_model_content.title_label.setText("Treinamento de modelos IA")
         card_model.set_content(card_model_content)
         
@@ -76,10 +76,10 @@ class ProgramView(QtWidgets.QWidget):
     @Slot(str)
     def on_json_loaded(self, filename):
         """Handles loading the JSON file and updating UI components."""
-        self.model_json.load_from_file(filename)
-        # Find the ModelJsonView and update its fields
-        self.findChild(ModelView).json_model.update_json_values()
-        self.modelDataChanged.emit()
+        if self.model_json.load_from_file(filename):
+            # Directly update the UI elements in ModelView since we have access to it.
+            self.findChild(ModelView).update_all_views()
+            self.modelDataChanged.emit()
         
 
     def create_views(self, qty):

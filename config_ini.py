@@ -26,7 +26,7 @@ default_roi_h = 30
 #----- Models ------#
 model_train_epocs = 30
 DATA_DIR = 'dataset' # Directory with your character subfolders
-MODEL_SAVE_PATH = 'sensebike_ocr_model.h5'
+MODEL_SAVE_PATH = 'sensebike_ocr_model.keras'
 LABEL_ENCODER_SAVE_PATH = 'sensebike_label_encoder.npy'
 IMG_HEIGHT = 28
 IMG_WIDTH = 28

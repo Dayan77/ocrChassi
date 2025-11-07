@@ -13,7 +13,7 @@ class ModelAi():
     encoder_filename: str
     model_train_dataset: str
     model_test_dataset: str
-    model_classes: str
+    model_classes: List[str]
     train_epochs: int
     image_height: int
     image_width: int
@@ -32,7 +32,7 @@ class ModelAi():
 class ModelJson():
     model = None
     def create_model(self, model_name: str, model_filename: str, encoder_filename: str, model_train_dataset: str, 
-                     model_test_dataset: str, model_classes: str, train_epochs: int, image_height: int, image_width: int):
+                     model_test_dataset: str, model_classes: List[str], train_epochs: int, image_height: int, image_width: int):
         self.model = ModelAi(model_name=model_name, model_filename=model_filename, encoder_filename=encoder_filename, model_train_dataset=model_train_dataset,
                              model_test_dataset=model_test_dataset, model_classes=model_classes, train_epochs=train_epochs, image_height=image_height, image_width=image_width )
         
@@ -98,9 +98,13 @@ class ModelJson():
                 loaded_data['image_height'], 
                 loaded_data['image_width']
                 )
+            return True
 
         except FileNotFoundError:
             print(f"Error: The file '{filename}' was not found.")
+            return False
         except json.JSONDecodeError:
             print(f"Error: Failed to decode JSON from the file '{filename}'. Check for malformed data.")        
-        
+            return False
+        except Exception:
+            return False

@@ -19,6 +19,7 @@ import pv_visionlib
 from components.datasetview import DatasetView
 from components.trainingsummaryview import TrainingSummaryView
 from components.trainingprocess import TrainingProcessDialog
+from components.resultsview import ResultsView
 
 
 class CardModel(QWidget):
@@ -136,8 +137,10 @@ class ModelView(QFrame):
         self.tabs.addTab(self.tab_data, "Treinamento")
         self.tabs.addTab(self.tab_results, "Resultados")
 
-        self.json_model = ModelJsonView(self.parent_wnd)
-        self.json_model.jsonLoaded.connect(self.jsonLoaded.emit)
+        # Pass self.parent_wnd (ProgramView) to ModelJsonView so it can access the model_json object
+        self.json_model_view = ModelJsonView(self.parent_wnd)
+        # Pass the signal up from the child view
+        self.json_model_view.jsonLoaded.connect(self.jsonLoaded)
 
         # --- Integrate DatasetView into the "Anotações" tab ---
         self.dataset_view = DatasetView()
@@ -152,7 +155,18 @@ class ModelView(QFrame):
         self.dataset_view.datasetLoaded.connect(self.update_training_summary)
         self.training_summary_view.startTrainingClicked.connect(self.start_training)
 
-        self.tab_config.setLayout(self.json_model)
+        # --- Integrate ResultsView into the "Resultados" tab ---
+        self.results_view = ResultsView()
+        results_tab_layout = QVBoxLayout(self.tab_results)
+        results_tab_layout.addWidget(self.results_view)
+
+        self.tab_config.setLayout(self.json_model_view)
+
+    def update_all_views(self):
+        """Update all child views with the new model data."""
+        self.json_model_view.update_json_values()
+        self.on_model_data_changed() # This will trigger dataset view to load
+
 
     @Slot()
     def on_model_data_changed(self):
@@ -173,15 +187,42 @@ class ModelView(QFrame):
             # You might want to show a QMessageBox here
             print("No model data loaded.")
             return
-        # dialog = TrainingProcessDialog(model_data, self)
+        
         dialog = TrainingProcessDialog(model_data, self)
+        dialog.trainingCompleted.connect(self.on_training_completed)
+        dialog.validationTestCompleted.connect(self.on_validation_completed)
         dialog.exec()
+
+    @Slot(object)
+    def on_training_completed(self, result):
+        """Receives results from the training dialog and updates relevant views."""
+        stats, class_names = result
+
+        # Update the results view with stats
+        self.results_view.update_training_summary(stats)
+
+        # If training was successful and we have class names, update the model
+        if stats and class_names:
+            # Store the classes as a list, not a concatenated string
+            self.parent_wnd.model_json.model.model_classes = class_names
+            
+            # Save the updated model back to the JSON file
+            self.parent_wnd.model_json.save_to_file(self.parent_wnd.model_json.model.model_filename)
+            
+            # Update the UI in the "Modelo" tab to show the new class string
+            self.json_model_view.update_json_values()
+            print(f"Updated model classes to: {class_names} and saved to file.")
+
+    @Slot(list)
+    def on_validation_completed(self, results):
+        """Receives validation results and passes them to the results view."""
+        self.results_view.update_validation_results(results)
 
 class ModelJsonView(QVBoxLayout):
     jsonLoaded = Signal(str)
 
     def __init__(self, parent_wnd = None):
-        super().__init__(parent_wnd)
+        super().__init__()
         self.parent_wnd = parent_wnd
 
         #json_layout = QVBoxLayout(self)
@@ -463,10 +504,10 @@ class ModelJsonView(QVBoxLayout):
                     self.json_encoderfile_edit.text(), 
                     self.json_traindataset_edit.text(),
                     self.json_testdataset_edit.text(),
-                    self.json_classes_edit.text(),
-                    self.json_epochs_edit.text(), 
-                    self.json_imageheight_edit.text(),
-                    self.json_imagewidth_edit.text()
+                    list(self.json_classes_edit.text()), # Convert string back to list of chars
+                    self.json_epochs_edit.value(),
+                    self.json_imageheight_edit.value(),
+                    self.json_imagewidth_edit.value()
                 )
             else:
                 self.parent_wnd.model_json.model.model_name = self.json_modelname_edit.text()
@@ -474,10 +515,10 @@ class ModelJsonView(QVBoxLayout):
                 self.parent_wnd.model_json.model.encoder_filename =  self.json_encoderfile_edit.text() 
                 self.parent_wnd.model_json.model.model_train_dataset =  self.json_traindataset_edit.text()
                 self.parent_wnd.model_json.model.model_test_dataset =  self.json_testdataset_edit.text()
-                self.parent_wnd.model_json.model.model_classes = self.json_classes_edit.text()
-                self.parent_wnd.model_json.model.train_epochs = self.json_epochs_edit.text()
-                self.parent_wnd.model_json.model.image_height = self.json_imageheight_edit.text()
-                self.parent_wnd.model_json.model.image_width = self.json_imagewidth_edit.text()
+                self.parent_wnd.model_json.model.model_classes = list(self.json_classes_edit.text())
+                self.parent_wnd.model_json.model.train_epochs = self.json_epochs_edit.value()
+                self.parent_wnd.model_json.model.image_height = self.json_imageheight_edit.value()
+                self.parent_wnd.model_json.model.image_width = self.json_imagewidth_edit.value()
 
             self.parent_wnd.model_json.save_to_file(self.json_filename_edit.text())
             return True
@@ -553,7 +594,8 @@ class ModelJsonView(QVBoxLayout):
         self.json_encoderfile_edit.setText(self.parent_wnd.model_json.model.encoder_filename)
         self.json_traindataset_edit.setText(self.parent_wnd.model_json.model.model_train_dataset)
         self.json_testdataset_edit.setText(self.parent_wnd.model_json.model.model_test_dataset)
-        self.json_classes_edit.setText(self.parent_wnd.model_json.model.model_classes)
+        # Join the list of classes into a string for display
+        self.json_classes_edit.setText("".join(self.parent_wnd.model_json.model.model_classes))
         self.json_epochs_edit.setValue(int(self.parent_wnd.model_json.model.train_epochs))
         self.json_imageheight_edit.setValue(int(self.parent_wnd.model_json.model.image_height))
         self.json_imagewidth_edit.setValue(int(self.parent_wnd.model_json.model.image_width))
