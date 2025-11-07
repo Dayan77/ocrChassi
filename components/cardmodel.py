@@ -18,7 +18,7 @@ from qt_material import apply_stylesheet
 import pv_visionlib
 from components.datasetview import DatasetView
 from components.trainingsummaryview import TrainingSummaryView
-#from components.trainingprocess import TrainingProcessDialog
+from components.trainingprocess import TrainingProcessDialog
 
 
 class CardModel(QWidget):
@@ -174,8 +174,8 @@ class ModelView(QFrame):
             print("No model data loaded.")
             return
         # dialog = TrainingProcessDialog(model_data, self)
-        # dialog.exec()
-
+        dialog = TrainingProcessDialog(model_data, self)
+        dialog.exec()
 
 class ModelJsonView(QVBoxLayout):
     jsonLoaded = Signal(str)
