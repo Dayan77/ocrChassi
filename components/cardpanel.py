@@ -8,7 +8,7 @@ import qtawesome as qta
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QStackedWidget, QLabel, QListWidget, QListWidgetItem, QPushButton,
+    QStackedWidget, QLabel, QListWidget, QListWidgetItem, QPushButton, QMessageBox,
     QSizePolicy, QGraphicsDropShadowEffect, QFrame,
     QCheckBox, QComboBox, QDateEdit, QDateTimeEdit, QDial, QDoubleSpinBox,
     QFontComboBox, QLCDNumber, QLineEdit, QProgressBar, QRadioButton, QSlider,
@@ -570,12 +570,32 @@ class ImageSegmentationView(QFrame):
             }
         """)
 
+        export_slices_btn = QPushButton("Exportar Imagens Treinamento")
+        export_slices_btn.setMaximumHeight(35)
+        export_slices_btn.setFixedWidth(250)
+        export_slices_icon = QIcon(":icons/icons/image.svg") 
+        export_slices_btn.setIcon(export_slices_icon)
+        export_slices_btn.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(0, 0, 0, 10); /* Semi-transparent black */
+                color: white;                       
+                border: 2px solid white;
+                border-radius: 5px;
+                padding: 5px;
+            }
+        """)
+
         #add widgets
         self.card_results.addWidget(self.alphabet_chars)
         self.card_results.addLayout(results_actions_row)
 
         results_data_row = QHBoxLayout()
-        results_data_row.addWidget(self.export_images_path)
+        export_path_layout = QVBoxLayout()
+        export_path_layout.addWidget(self.export_images_path)
+        export_path_layout.addWidget(export_slices_btn, alignment=Qt.AlignmentFlag.AlignLeft)
+        export_slices_btn.clicked.connect(self.on_export_slices_clicked)
+
+        results_data_row.addLayout(export_path_layout)
         results_data_row.addWidget(self.list_segmentation_results)
         self.card_results.addLayout(results_data_row)
         
@@ -611,9 +631,29 @@ class ImageSegmentationView(QFrame):
             with open(filename, 'w') as json_file:
                     json.dump(samples, json_file, indent=4)
 
+            QMessageBox.information(self, "Sucesso", "Anotações JSON exportadas com sucesso!")
+
+            # # Also export the image slices
+            # if self.export_slices_images():
+            #     QMessageBox.information(self, "Sucesso", "Anotações e imagens exportadas com sucesso!")
+            # else:
+            #     QMessageBox.warning(self, "Falha", "Ocorreu um erro ao exportar as imagens.")
+            return True
+        except:
+            return False
+
+
+    def export_slices_images(self):
+        try:
+            ###Create json with image rois informations
+            samples = self.parent_wnd.cameras[self.cam_index].refresh_rois_dict(self.alphabet_chars.text())
 
             ###Export image slice of roi for training 
             path = self.export_images_path.text()
+            if not path or not os.path.isdir(os.path.dirname(path)):
+                 QMessageBox.warning(self, "Caminho Inválido", "Por favor, insira um caminho válido para exportar as imagens.")
+                 return False
+
             if not os.path.exists(path):
                 os.makedirs(path)
 
@@ -622,6 +662,8 @@ class ImageSegmentationView(QFrame):
 
             for item in samples.items():
                 char = item[1]['char']
+                if char == '?': continue # Skip unknown characters
+
                 x = item[1]['box']['x']
                 y = item[1]['box']['y']
                 w = item[1]['box']['w']
@@ -630,22 +672,26 @@ class ImageSegmentationView(QFrame):
                 char_img = self.parent_wnd.cameras[self.cam_index].actual_image[y:y+h, x:x+w] 
                 
 
-                path_write = path+"/"+char
+                path_write = os.path.join(path, char)
                 if not os.path.exists(path_write):
                     os.makedirs(path_write)
 
-                filename_exp = char+"_"+item[0]+"_image_"+origin_image_filename #datetime.datetime.now().strftime("%Y%m%d_%H%M%S")+".jpg"
-                cv2.imwrite(path_write+"/"+filename_exp, char_img)
-                pass
-                
-
-                
-                
+                # Create a more unique filename
+                timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S%f")
+                filename_exp = f"{char}_{item[0]}_{timestamp}_{origin_image_filename}"
+                cv2.imwrite(os.path.join(path_write, filename_exp), char_img)
 
             return True
-        except:
+        except Exception as e:
+            print(f"Error exporting slices: {e}")
             return False
 
+    def on_export_slices_clicked(self):
+        """Slot for the new export slices button."""
+        if self.export_slices_images():
+            QMessageBox.information(self, "Sucesso", "Imagens exportadas para treinamento com sucesso!")
+        else:
+            QMessageBox.warning(self, "Falha", "Ocorreu um erro ao exportar as imagens para treinamento.")
 
     def updateCV_Image(self, image):
         lib = pv_visionlib.pvVisionLib()

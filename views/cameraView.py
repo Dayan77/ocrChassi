@@ -14,6 +14,7 @@
 #     pass
 
 
+from asyncio import sleep
 import glob
 import json
 import os
@@ -94,6 +95,7 @@ class CameraView(QtWidgets.QWidget):
         self.next_button = QtWidgets.QPushButton()
         self.next_button.setMaximumHeight(35)
         self.next_button.setMaximumWidth(60)
+        
         next_icon = QIcon(":icons/icons/arrow-right.svg") 
         self.next_button.setIcon(next_icon)
 
@@ -188,6 +190,7 @@ class CameraView(QtWidgets.QWidget):
         self.isLive = False
 
     def previous_image(self):
+        self.disable_btns() #disable buttons to avoid multiple clicks
         self.image_index = self.image_index-1
 
         self.images_list = self.refresh_images_list()
@@ -198,9 +201,27 @@ class CameraView(QtWidgets.QWidget):
         self.label.setImage( self.load_image_path(self.images_list[self.image_index]) )
         self.image_path = self.images_list[self.image_index]
         self.search_annotation_file(self.images_list[self.image_index])
-        
+        sleep(1)
+        self.enable_btns() #enable buttons after image is loaded
+
+    
+    def disable_btns(self):
+        self.live_button.setEnabled(False)
+        self.picture_button.setEnabled(False)
+        self.file_button.setEnabled(False)
+        self.previous_button.setEnabled(False)
+        self.next_button.setEnabled(False)
+
+    def enable_btns(self):
+        self.live_button.setEnabled(True)
+        self.picture_button.setEnabled(True)
+        self.file_button.setEnabled(True)
+        self.previous_button.setEnabled(True)
+        self.next_button.setEnabled(True)
+
 
     def next_image(self):
+        self.disable_btns() #disable buttons to avoid multiple clicks
         self.image_index = self.image_index+1
 
         self.images_list = self.refresh_images_list()
@@ -211,6 +232,8 @@ class CameraView(QtWidgets.QWidget):
         self.label.setImage( self.load_image_path(self.images_list[self.image_index]) )
         self.image_path = self.images_list[self.image_index]
         self.search_annotation_file(self.images_list[self.image_index])
+        sleep(1)
+        self.enable_btns() #enable buttons after image is loaded
 
 
     def refresh_images_list(self):
@@ -224,14 +247,19 @@ class CameraView(QtWidgets.QWidget):
 
 
     def search_annotation_file(self, image_file):
-        image_annotations = list(Path(self.images_folder).glob(os.path.basename(image_file+".json")))
+        try:
+            image_annotations = list(Path(self.images_folder).glob(os.path.basename(image_file+".json")))
 
-        if len(image_annotations) > 0:
-            self.draw_rois_json( image_annotations[0].as_posix())
-            return image_annotations[0].as_posix()
-        else:
+            if len(image_annotations) > 0:
+                self.draw_rois_json( image_annotations[0].as_posix())
+                return image_annotations[0].as_posix()
+            else:
+                self.delete_all_rois()
+                return None
+        except:
             self.delete_all_rois()
             return None
+
     
     def draw_rois_json(self, json_file):
         dict_from_file = None
