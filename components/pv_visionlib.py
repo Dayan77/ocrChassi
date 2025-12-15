@@ -12,7 +12,7 @@ import numpy as np
 import random
 import tensorflow as tf
 import tensorflow_datasets as tfds
-import pytesseract
+#import pytesseract
 import easyocr
 
 import pyqtgraph as pg
@@ -36,7 +36,7 @@ class pvVisionLib():
         print("Grayscale Image:")
         cv2.imshow('test',image_rgb)
 
-        extracted_text = pytesseract.image_to_string(image_rgb)
+        extracted_text = None#pytesseract.image_to_string(image_rgb)
         print(" Extracted Text:\n")
         print(extracted_text)
 
