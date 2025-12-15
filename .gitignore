@@ -20,3 +20,4 @@ models/captcha_train/
 models/sensebike/
 # IDE
 .vscode/
+*.pyc
