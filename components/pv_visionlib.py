@@ -13,7 +13,7 @@ import random
 import tensorflow as tf
 import tensorflow_datasets as tfds
 #import pytesseract
-import easyocr
+#import easyocr
 
 import pyqtgraph as pg
 
@@ -41,7 +41,7 @@ class pvVisionLib():
         print(extracted_text)
 
     def test_easyocr(self, img):
-        reader = easyocr.Reader(['en'])
+        reader = None#easyocr.Reader(['en'])
         extract_info = reader.readtext(img)
 
         for el in extract_info:
