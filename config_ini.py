@@ -10,9 +10,16 @@ app_company_logo = ""
 
 #----- Cameras ------#
 cam_qty = 2
-cam_usb_index = [ 2, 1]
+cam_usb_index = [ 0, 1]
 cam_usb_color = [ 1, 1]
 cam_usb_flip = [ 1, 1]
+cam_auto_exposure = [ 0, 0] # 1 for auto, 0 for manual
+cam_exposure = [ -16, -6]    # Manual exposure value
+cam_auto_wb = [ 0, 0]       # 1 for auto, 0 for manual
+cam_wb_temperature = [ 4000, 4000] # Manual white balance
+cam_auto_focus = [ 0, 0]    # 1 for auto, 0 for manual
+cam_focus = [ 255, 0]         # Manual focus value (0-255)
+
 cam_files_path = ""
 default_roi_x = 50
 default_roi_y = 50

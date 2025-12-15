@@ -22,6 +22,9 @@ class TrainingSummaryView(QWidget):
     """
 
     startTrainingClicked = Signal()
+    startDetectorTrainingClicked = Signal()
+    prepareYoloDataClicked = Signal()
+    prepareRecognitionDataClicked = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -81,7 +84,35 @@ class TrainingSummaryView(QWidget):
         self.start_button.clicked.connect(self.startTrainingClicked)
         self.start_button.setEnabled(False)
 
+        self.train_detector_button = QPushButton("Train Detector")
+        detector_icon = QIcon(":icons/icons/crosshair.svg")
+        self.train_detector_button.setIcon(detector_icon)
+        self.train_detector_button.setMinimumHeight(40)
+        self.train_detector_button.setFont(font)
+        self.train_detector_button.clicked.connect(self.startDetectorTrainingClicked)
+        self.train_detector_button.setEnabled(False) # Enable when a model is loaded
+
+        self.prepare_yolo_button = QPushButton("Prepare YOLO Data")
+        prepare_icon = QIcon(":icons/icons/zap.svg")
+        self.prepare_yolo_button.setIcon(prepare_icon)
+        self.prepare_yolo_button.setMinimumHeight(40)
+        self.prepare_yolo_button.setFont(font)
+        self.prepare_yolo_button.clicked.connect(self.prepareYoloDataClicked)
+        self.prepare_yolo_button.setEnabled(False)
+
+        self.prepare_rec_button = QPushButton("Prepare Recognition Data")
+        rec_icon = QIcon(":icons/icons/image.svg")
+        self.prepare_rec_button.setIcon(rec_icon)
+        self.prepare_rec_button.setMinimumHeight(40)
+        self.prepare_rec_button.setFont(font)
+        self.prepare_rec_button.clicked.connect(self.prepareRecognitionDataClicked)
+        self.prepare_rec_button.setEnabled(False)
+
         actions_layout.addWidget(self.start_button)
+        actions_layout.addSpacing(20)
+        actions_layout.addWidget(self.train_detector_button)
+        actions_layout.addWidget(self.prepare_rec_button)
+        actions_layout.addWidget(self.prepare_yolo_button)
 
         main_layout.addWidget(config_group)
         main_layout.addWidget(dataset_group)
@@ -104,6 +135,9 @@ class TrainingSummaryView(QWidget):
             # Join list of classes into a displayable string
             self.classes_list_label.setText(f"<b>{''.join(model_data.model_classes)}</b>")
             self.start_button.setEnabled(True)
+            self.prepare_rec_button.setEnabled(True)
+            self.prepare_yolo_button.setEnabled(True)
+            self.train_detector_button.setEnabled(True)
         else:
             self.model_name_label.setText("N/A")
             self.epochs_label.setText("N/A")
@@ -113,6 +147,9 @@ class TrainingSummaryView(QWidget):
             self.test_path_edit.setText("N/A")
             self.classes_list_label.setText("N/A")
             self.start_button.setEnabled(False)
+            self.prepare_rec_button.setEnabled(False)
+            self.prepare_yolo_button.setEnabled(False)
+            self.train_detector_button.setEnabled(False)
 
         if dataset_summary:
             num_classes = dataset_summary.get('classes', 'N/A')

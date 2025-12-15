@@ -1,5 +1,17 @@
 import os
 import sys
+import json
+import random
+import shutil
+import yaml
+import cv2
+
+import components.pv_visionlib as vision_lib
+
+try:
+    from ultralytics import YOLO
+except ImportError:
+    YOLO = None
 
 from PySide6.QtCore import Qt, QSize, Signal
 from PySide6.QtGui import QIcon, QFont
@@ -315,6 +327,227 @@ class DatasetView(QWidget):
             # Clear pending changes and reload
             self.browse_folder() # This will clear pending lists and reload the view
 
+def prepare_yolo_dataset(source_path, destination_path, parent_widget=None):
+    """
+    Converts the annotated dataset (images + .json files) into YOLO format.
+    """
+    if not source_path or not os.path.isdir(source_path):
+        QMessageBox.warning(parent_widget, "No Source Dataset", "Please set a valid 'Annotation Dataset' path in the 'Modelo' tab.")
+        return False
+
+    if not destination_path:
+        QMessageBox.warning(parent_widget, "No Destination Path", "Please set a 'Detector Dataset (YOLO)' path in the 'Modelo' tab.")
+        return False
+
+    # --- Ask to clear destination folder if it exists and is not empty ---
+    if os.path.exists(destination_path) and os.listdir(destination_path):
+        reply = QMessageBox.question(
+            parent_widget,
+            "Clear Destination",
+            f"The destination folder '{destination_path}' is not empty.\n\n"
+            "Do you want to clear it before preparing the new dataset?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            shutil.rmtree(destination_path)
+        else:
+            QMessageBox.information(parent_widget, "Cancelled", "Dataset preparation cancelled.")
+            return False
+
+    # --- Create YOLO directory structure ---
+    paths = {
+        "train_images": os.path.join(destination_path, "images", "train"),
+        "val_images": os.path.join(destination_path, "images", "val"),
+        "train_labels": os.path.join(destination_path, "labels", "train"),
+        "val_labels": os.path.join(destination_path, "labels", "val"),
+    }
+    for path in paths.values():
+        os.makedirs(path, exist_ok=True)
+
+    # --- Find all images with corresponding .json annotations ---
+    image_files = []
+    for root, _, files in os.walk(source_path):
+        for file in files:
+            if file.lower().endswith(('.png', '.jpg', '.jpeg')):
+                json_path = os.path.join(root, file + ".json")
+                if os.path.exists(json_path):
+                    image_files.append(os.path.join(root, file))
+    if not image_files:
+        QMessageBox.information(parent_widget, "No Annotations", "No images with corresponding .json annotation files were found.")
+        return False
+
+    # --- Split data into training and validation sets ---
+    random.seed(42)
+    random.shuffle(image_files)
+    split_index = int(len(image_files) * 0.8)
+    train_files = image_files[:split_index]
+    val_files = image_files[split_index:]
+
+    # --- Process files and create YOLO labels ---
+    def process_files(file_list, image_dest, label_dest):
+        for img_path in file_list:
+            try:
+                shutil.copy(img_path, image_dest)
+                json_path = img_path + ".json"
+                with open(json_path, 'r') as f:
+                    annotations = json.load(f)
+
+                img = cv2.imread(img_path)
+                if img is None: continue
+                img_height, img_width, _ = img.shape
+                
+                label_filename = os.path.splitext(os.path.basename(img_path))[0] + ".txt"
+                label_path = os.path.join(label_dest, label_filename)
+
+                with open(label_path, 'w') as f_label:
+                    for roi_id, data in annotations.items():
+                        box = data['box']
+                        x, y, w, h = box['x'], box['y'], box['w'], box['h']
+                        x_center = (x + w / 2) / img_width
+                        y_center = (y + h / 2) / img_height
+                        width_norm = w / img_width
+                        height_norm = h / img_height
+                        f_label.write(f"0 {x_center:.6f} {y_center:.6f} {width_norm:.6f} {height_norm:.6f}\n")
+            except Exception as e:
+                print(f"Error processing file {img_path}: {e}")
+
+    process_files(train_files, paths["train_images"], paths["train_labels"])
+    process_files(val_files, paths["val_images"], paths["val_labels"])
+
+    # --- Create data.yaml file ---
+    data_yaml_path = os.path.join(destination_path, "data.yaml")
+    yaml_content = {
+        'train': os.path.abspath(paths["train_images"]),
+        'val': os.path.abspath(paths["val_images"]),
+        'nc': 1,
+        'names': ['character']
+    }
+    with open(data_yaml_path, 'w') as f:
+        yaml.dump(yaml_content, f, default_flow_style=False)
+
+    QMessageBox.information(parent_widget, "Success", f"YOLO dataset created successfully at:\n{destination_path}")
+    return True
+
+def _calculate_iou(boxA, boxB):
+    # From [x, y, w, h] to [x1, y1, x2, y2]
+    boxA_coords = [boxA['x'], boxA['y'], boxA['x'] + boxA['w'], boxA['y'] + boxA['h']]
+    inter_x1 = max(boxA_coords[0], boxB[0])
+    inter_y1 = max(boxA_coords[1], boxB[1])
+    inter_x2 = min(boxA_coords[2], boxB[2])
+    inter_y2 = min(boxA_coords[3], boxB[3])
+    inter_area = max(0, inter_x2 - inter_x1) * max(0, inter_y2 - inter_y1)
+    boxA_area = (boxA_coords[2] - boxA_coords[0]) * (boxA_coords[3] - boxA_coords[1])
+    boxB_area = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
+    return inter_area / float(boxA_area + boxB_area - inter_area) if float(boxA_area + boxB_area - inter_area) > 0 else 0
+
+def prepare_recognition_dataset(source_path, destination_path, detector_path, model_data, parent_widget=None):
+    """
+    Uses a trained YOLO detector to find characters in the source dataset,
+    preprocesses them, and saves them to the recognition dataset folder, sorted by class.
+    """
+    if not YOLO:
+        QMessageBox.critical(parent_widget, "Error", "'ultralytics' package not found. Please install it.")
+        return False
+
+    if not source_path or not os.path.isdir(source_path):
+        QMessageBox.warning(parent_widget, "No Source Dataset", "Please set a valid 'Annotation Dataset' path.")
+        return False
+
+    if not destination_path:
+        QMessageBox.warning(parent_widget, "No Destination Path", "Please set a 'Recognition Train Dataset' path.")
+        return False
+
+    if not detector_path or not os.path.exists(detector_path):
+        QMessageBox.warning(parent_widget, "No Detector Model", "Please set a valid 'Detector Model' path.")
+        return False
+
+    # --- Ask to clear destination folder ---
+    if os.path.exists(destination_path) and os.listdir(destination_path):
+        reply = QMessageBox.question(
+            parent_widget, "Clear Destination",
+            f"The destination folder '{destination_path}' is not empty.\n\n"
+            "This will delete all existing images in it. Are you sure you want to continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            shutil.rmtree(destination_path)
+        else:
+            QMessageBox.information(parent_widget, "Cancelled", "Data preparation cancelled.")
+            return False
+
+    os.makedirs(destination_path, exist_ok=True)
+
+    # --- Load detector model ---
+    try:
+        detector_model = YOLO(detector_path)
+    except Exception as e:
+        QMessageBox.critical(parent_widget, "Error", f"Failed to load detector model: {e}")
+        return False
+
+    # --- Process each image in the source annotation folder ---
+    visionlib = vision_lib.pvVisionLib()
+    img_h, img_w = model_data.image_height, model_data.image_width
+    count = 0
+
+    for filename in os.listdir(source_path):
+        if not filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+            continue
+
+        img_path = os.path.join(source_path, filename)
+        json_path = img_path + ".json"
+        if not os.path.exists(json_path):
+            continue
+
+        with open(json_path, 'r') as f:
+            annotations = json.load(f)
+
+        source_image = cv2.imread(img_path)
+        gray_img = visionlib.convert_to_gray(source_image)
+
+        # Use detector to get bounding boxes
+        detection_results = detector_model(source_image, verbose=False)
+        boxes = detection_results[0].boxes.xyxy.cpu().numpy()
+        
+        # --- Match detected boxes with annotations using IoU ---
+        annotation_list = list(annotations.values())
+
+        for i, detected_box in enumerate(boxes):
+            best_match = None
+            highest_iou = 0.5  # Set a threshold to avoid bad matches
+
+            for ann in annotation_list:
+                iou = _calculate_iou(ann['box'], detected_box)
+                if iou > highest_iou:
+                    highest_iou = iou
+                    best_match = ann
+
+            if best_match:
+                true_char = best_match['char']
+                if true_char == '?': continue # Skip unlabeled characters
+
+                x_min, y_min, x_max, y_max = map(int, detected_box)
+
+                # This is the exact same preprocessing as in InferenceView
+                char_img = gray_img[y_min:y_max, x_min:x_max]
+                h, w = char_img.shape
+                if h > w:
+                    pad = (h - w) // 2
+                    char_img = cv2.copyMakeBorder(char_img, 0, 0, pad, pad, cv2.BORDER_CONSTANT, value=[0])
+                elif w > h:
+                    pad = (w - h) // 2
+                    char_img = cv2.copyMakeBorder(char_img, pad, pad, 0, 0, cv2.BORDER_CONSTANT, value=[0])
+                
+                resized_char = cv2.resize(char_img, (img_w, img_h), interpolation=cv2.INTER_AREA)
+
+                class_folder = os.path.join(destination_path, true_char)
+                os.makedirs(class_folder, exist_ok=True)
+                save_path = os.path.join(class_folder, f"{os.path.splitext(filename)[0]}_char_{i}.png")
+                cv2.imwrite(save_path, resized_char)
+                count += 1
+
+    QMessageBox.information(parent_widget, "Success", f"Recognition dataset prepared successfully.\n{count} character images were created.")
+    return True
 
 if __name__ == '__main__':
     # Example of how to use the widget

@@ -4,6 +4,9 @@
     "encoder_filename": "/Users/dayansantos/Dev/ocrChassi/sensebike_ocr_model.keras",
     "model_train_dataset": "/Users/dayansantos/Dev/ocrChassi/models/captcha_train",
     "model_test_dataset": "/Users/dayansantos/Dev/ocrChassi/models/captcha_test",
+    "yolo_dataset_path": "/Users/dayansantos/Dev/ocrChassi/models/captcha_train/yolo",
+    "annotation_dataset_path": "/Users/dayansantos/Dev/ocrChassi/models/captcha_images_v2",
+    "detector_model_path": "/Users/dayansantos/Dev/ocrChassi/runs/detector_training11/weights/best.pt",
     "model_classes": [
         "2",
         "3",
@@ -18,14 +21,18 @@
         "e",
         "f",
         "g",
+        "l",
         "m",
         "n",
+        "o",
+        "o",
         "p",
         "w",
         "x",
+        "y",
         "y"
     ],
-    "train_epochs": 100,
+    "train_epochs": 200,
     "image_height": 31,
     "image_width": 31
 }

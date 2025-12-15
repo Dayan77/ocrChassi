@@ -3,6 +3,7 @@
 # from pathlib import Path
 
 # from PySide6.QtMultimedia import (QAudioInput, QCamera, QCameraDevice,
+#                                   QMediaCaptureSession, QMediaDevices, QMediaMetaData,
 #                                   QImageCapture, QMediaCaptureSession,
 #                                   QMediaDevices, QMediaMetaData,
 #                                   QMediaRecorder)
@@ -17,11 +18,12 @@
 from asyncio import sleep
 import glob
 import json
+import time
 import os
 from pathlib import Path
 import sys
-from PySide6 import QtWidgets
-from PySide6.QtCore import Qt, QThread, Signal, Slot
+from PySide6 import QtCore, QtWidgets
+from PySide6.QtCore import Qt, QThread, Signal, Slot, QDateTime, QDir
 from PySide6.QtGui import QImage, QColor
 from PySide6.QtGui import QIcon, QPixmap, QImage
 from PySide6.QtMultimedia import QMediaDevices
@@ -80,6 +82,12 @@ class CameraView(QtWidgets.QWidget):
         #picture_icon = QIcon(":icons/icons/camera.svg") 
         self.picture_button.setIcon(self.tint_icon(":icons/icons/camera.svg", "green"))
 
+        self.save_button = QtWidgets.QPushButton()
+        self.save_button.setMaximumHeight(35)
+        self.save_button.setMaximumWidth(60)
+        save_icon = QIcon(":icons/icons/save.svg")
+        self.save_button.setIcon(save_icon)
+
         self.file_button = QtWidgets.QPushButton()
         self.file_button.setMaximumHeight(35)
         self.file_button.setMaximumWidth(60)
@@ -120,6 +128,17 @@ class CameraView(QtWidgets.QWidget):
                 padding: 7px;
             }
         """)
+
+        # Style the button to be partially transparent and smaller
+        self.save_button.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(0, 0, 0, 50); /* Semi-transparent black */
+                color: white;
+                border: 2px solid white;
+                border-radius: 10px;
+                padding: 7px;
+            }
+        """)
         # Style the button to be partially transparent and smaller
         self.file_button.setStyleSheet("""
             QPushButton {
@@ -156,24 +175,27 @@ class CameraView(QtWidgets.QWidget):
         pg.setConfigOptions(imageAxisOrder='row-major')
     
         label_widget = QtWidgets.QWidget()
-        label_widget.setMinimumWidth(int(width/2)+280)
+        # Create a layout for the image view widget
+        image_layout = QtWidgets.QVBoxLayout(label_widget)
+        image_layout.setContentsMargins(0, 0, 0, 0)
         
-        self.label = pg.ImageView(label_widget, roi=None, normRoi=None, )
+        self.label = pg.ImageView(roi=None, normRoi=None)
         self.label.setImage(  self.load_image_path("images/No_Image_Available.jpg") )#setPixmap(QPixmap(":images/images/No_Image_Available.jpg"))    
         self.label.getHistogramWidget().hide()
         self.label.ui.roiBtn.hide()
         self.label.ui.menuBtn.hide()
         self.label.autoRange()
         self.label.getView().scene().sigMouseClicked.connect(self.on_plot_clicked)
-        #label_widget.addWidget(self.label)
+        image_layout.addWidget(self.label)
         
         cam_actions.addWidget(self.live_button)
         cam_actions.addWidget(self.picture_button)
+        cam_actions.addWidget(self.save_button)
         cam_actions.addWidget(self.file_button)  
         cam_actions.addWidget(self.previous_button)
         cam_actions.addWidget(self.next_button)
-        self.camera_tool.addWidget(cam_actions_widget)
-        self.camera_tool.addWidget(label_widget) #self.label)
+        self.camera_tool.addWidget(cam_actions_widget, 0) # Stretch factor of 0
+        self.camera_tool.addWidget(label_widget, 1) # Stretch factor of 1
         
         
         
@@ -187,7 +209,75 @@ class CameraView(QtWidgets.QWidget):
         self.file_button.clicked.connect(self.open_image_dialog)
         self.previous_button.clicked.connect(self.previous_image)
         self.next_button.clicked.connect(self.next_image)
+        self.picture_button.clicked.connect(self.take_picture)
+        self.save_button.clicked.connect(self.save_picture)
         self.isLive = False
+
+    def _apply_camera_settings(self, cap, index):
+        """Applies camera settings from config_ini to a VideoCapture object."""
+        # Exposure
+        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, config_ini.cam_auto_exposure[index])
+        if not config_ini.cam_auto_exposure[index]:
+            cap.set(cv2.CAP_PROP_EXPOSURE, config_ini.cam_exposure[index])
+        # White Balance
+        cap.set(cv2.CAP_PROP_AUTO_WB, config_ini.cam_auto_wb[index])
+        if not config_ini.cam_auto_wb[index]:
+            cap.set(cv2.CAP_PROP_WB_TEMPERATURE, config_ini.cam_wb_temperature[index])
+        # Focus
+        cap.set(cv2.CAP_PROP_AUTOFOCUS, config_ini.cam_auto_focus[index])
+        if not config_ini.cam_auto_focus[index]:
+            cap.set(cv2.CAP_PROP_FOCUS, config_ini.cam_focus[index])
+
+    def take_picture(self):
+        """Captures the current frame and saves it to a file."""
+        if self.isLive:
+            # If live, just stop the feed. The last frame is already in actual_image.
+            self.start_live() # Toggles it off
+        else:
+            # If not live, open camera, grab a single frame, and close
+            self.capture_single_frame()
+
+    def capture_single_frame(self):
+        """Opens the camera, captures a single frame, and displays it."""
+        # If not live, open camera, grab a single frame, and close
+        cap = cv2.VideoCapture(self.camera_usb_index)
+        if not cap.isOpened():
+            QtWidgets.QMessageBox.warning(self, "Camera Error", "Could not open camera.")
+            return
+        
+        self._apply_camera_settings(cap, self.camera_usb_index)
+        
+        # Allow the camera to warm up and adjust exposure
+        for _ in range(10):
+            cap.read()
+
+        # Re-apply settings after warm-up to ensure they stick
+        self._apply_camera_settings(cap, self.camera_usb_index)
+
+        ret, frame = cap.read()
+        cap.release()
+        if ret:
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            captured_frame = cv2.flip(rgb_frame, 1)
+            self.setImage(captured_frame) # Update the view
+
+    def save_picture(self):
+        """Saves the currently displayed image to a file."""
+        if self.actual_image is None:
+            QtWidgets.QMessageBox.warning(self, "No Image", "There is no image to save.")
+            return
+
+        # Open a file dialog to save the image
+        timestamp = QDateTime.currentDateTime().toString("yyyyMMdd_hhmmss")
+        default_filename = os.path.join(config_ini.cam_files_path or QDir.homePath(), f"capture_{timestamp}.png")
+        
+        file_path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save Image", default_filename, "PNG Image (*.png)")
+        if file_path:
+            # Convert the currently displayed image (which is RGB) to BGR for OpenCV
+            bgr_image = cv2.cvtColor(self.actual_image, cv2.COLOR_RGB2BGR)
+            cv2.imwrite(file_path, bgr_image)
+            print(f"Image saved to: {file_path}")
+            QtWidgets.QMessageBox.information(self, "Image Saved", f"Image successfully saved to:\n{file_path}")
 
     def previous_image(self):
         self.disable_btns() #disable buttons to avoid multiple clicks
@@ -272,7 +362,7 @@ class CameraView(QtWidgets.QWidget):
 
 
     def draw_rois_dict(self, rois):
-        
+        self.delete_all_rois()
         self.delete_all_rois()
         self.image_chars = ""
         
@@ -380,7 +470,7 @@ class CameraView(QtWidgets.QWidget):
             self.th.index = self.camera_usb_index
             #self.th.finished.connect(self.close)
             self.th.updateFrame.connect(self.setImage)
-            self.runWebCam(0, self.width, self.height)
+            self.runWebCam(self.camera_usb_index, self.width, self.height)
             # Style the button to be partially transparent and smaller
             self.live_button.setStyleSheet("""
                 QPushButton {
@@ -415,8 +505,12 @@ class CameraView(QtWidgets.QWidget):
         self.th.start()
 
     @Slot(QImage)
-    def setImage(self, image):
-        self.label.setPixmap(QPixmap.fromImage(image))
+    def setImage(self, frame):
+        if isinstance(frame, QPixmap):
+            self.label.setImage(self.load_image_path(self.image_path))
+        else:
+            self.label.setImage(frame)
+            self.actual_image = frame
     
     def updateCV_Image(self, image):
         lib = pv_visionlib.pvVisionLib()
@@ -641,7 +735,7 @@ class CameraView(QtWidgets.QWidget):
 
 
 class Thread(QThread):
-    updateFrame = Signal(QImage)
+    updateFrame = Signal(np.ndarray)
     width = 0
     height = 0
     index = -1
@@ -655,19 +749,26 @@ class Thread(QThread):
 
     def run(self):
         self.cap = cv2.VideoCapture(self.index)
+        
+        # Allow the camera to warm up before applying settings
+        for _ in range(10):
+            self.cap.read()
+
+        # Apply manual settings from config
+        self.parent()._apply_camera_settings(self.cap, self.index)
+    
+        
         while self.status:
             ret, frame = self.cap.read()
             if not ret:
                 continue
 
-            # Convert the frame from BGR to RGB
+            # Reading the frame, converting it to RGB, and flipping it for correct orientation
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            
-            h, w, ch = rgb_frame.shape
-            img = QImage(rgb_frame.data, w, h, ch * w, QImage.Format_RGB888)
-            scaled_img = img.scaled(self.width, self.height, Qt.KeepAspectRatio)#Qt.KeepAspectRatio
+            flipped_frame = cv2.flip(rgb_frame, 1)
+
             # Emit signal
-            self.updateFrame.emit(scaled_img)
+            self.updateFrame.emit(flipped_frame)
         self.cap.release()
         self.cap = None
         #sys.exit(-1)

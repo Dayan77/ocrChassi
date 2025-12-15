@@ -1,0 +1,24 @@
+{
+    "model_name": "sensebike_demo",
+    "model_filename": "/Users/dayansantos/Dev/ocrChassi/models/sensebike_demo.json",
+    "encoder_filename": "/Users/dayansantos/Dev/ocrChassi/sensebike_ocr_model.keras",
+    "model_train_dataset": "/Users/dayansantos/Dev/ocrChassi/models/Sense_chassi_lab/train",
+    "model_test_dataset": "/Users/dayansantos/Dev/ocrChassi/models/Sense_chassi_lab/valid",
+    "yolo_dataset_path": "/Users/dayansantos/Dev/ocrChassi/models/Sense_chassi_lab/train/yolo",
+    "annotation_dataset_path": "/Users/dayansantos/Dev/ocrChassi/models/Sense_chassi_lab",
+    "detector_model_path": "/Users/dayansantos/Dev/ocrChassi/runs/detector_training13/weights/best.pt",
+    "model_classes": [
+        "0",
+        "2",
+        "3",
+        "5",
+        "6",
+        "7",
+        "I",
+        "M",
+        "S"
+    ],
+    "train_epochs": 200,
+    "image_height": 31,
+    "image_width": 31
+}

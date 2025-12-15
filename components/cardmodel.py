@@ -3,7 +3,8 @@ import qtawesome as qta
 from PySide6.QtCore import Qt, QSize, Signal, Slot
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QStackedWidget, QLabel, QListWidget, QListWidgetItem, QPushButton,
+    QStackedWidget, QLabel, QListWidget, QListWidgetItem, QPushButton, QMessageBox,
+    QScrollArea,
     QSizePolicy, QGraphicsDropShadowEffect, QFrame,
     QCheckBox, QComboBox, QDateEdit, QDateTimeEdit, QDial, QDoubleSpinBox,
     QFontComboBox, QLCDNumber, QLineEdit, QProgressBar, QRadioButton, QSlider,
@@ -16,10 +17,12 @@ from PySide6.QtGui import QColor, QIcon, QPixmap
 from qt_material import apply_stylesheet
 
 import pv_visionlib
-from components.datasetview import DatasetView
+from components.datasetview import DatasetView, prepare_yolo_dataset, prepare_recognition_dataset
 from components.trainingsummaryview import TrainingSummaryView
 from components.trainingprocess import TrainingProcessDialog
 from components.resultsview import ResultsView
+from components.inferenceview import InferenceView
+from components.detectortrainingdialog import DetectorTrainingDialog
 
 
 class CardModel(QWidget):
@@ -131,11 +134,15 @@ class ModelView(QFrame):
         self.tab_results = QWidget()
         self.tab_results.setFixedHeight(height)
         self.tab_results.setFixedWidth(800)
+        self.tab_inference = QWidget()
+        self.tab_inference.setFixedHeight(height)
+        self.tab_inference.setFixedWidth(800)
 
         self.tabs.addTab(self.tab_config, "Modelo")
         self.tabs.addTab(self.tab_edit, "Anotações")
         self.tabs.addTab(self.tab_data, "Treinamento")
         self.tabs.addTab(self.tab_results, "Resultados")
+        self.tabs.addTab(self.tab_inference, "Inferência")
 
         # Pass self.parent_wnd (ProgramView) to ModelJsonView so it can access the model_json object
         self.json_model_view = ModelJsonView(self.parent_wnd)
@@ -154,13 +161,35 @@ class ModelView(QFrame):
         train_tab_layout.addWidget(self.training_summary_view)
         self.dataset_view.datasetLoaded.connect(self.update_training_summary)
         self.training_summary_view.startTrainingClicked.connect(self.start_training)
+        self.training_summary_view.prepareRecognitionDataClicked.connect(self.on_prepare_recognition_data_clicked)
+        self.training_summary_view.prepareYoloDataClicked.connect(self.on_prepare_yolo_data_clicked)
+        self.training_summary_view.startDetectorTrainingClicked.connect(self.start_detector_training)
 
         # --- Integrate ResultsView into the "Resultados" tab ---
         self.results_view = ResultsView()
         results_tab_layout = QVBoxLayout(self.tab_results)
         results_tab_layout.addWidget(self.results_view)
 
-        self.tab_config.setLayout(self.json_model_view)
+        # --- Integrate InferenceView into the "Inferência" tab ---
+        self.inference_view = InferenceView(self.parent_wnd)
+        inference_tab_layout = QVBoxLayout(self.tab_inference)
+        inference_tab_layout.addWidget(self.inference_view)
+        # Connect a signal to notify InferenceView when a model is loaded/changed
+        self.parent_wnd.modelDataChanged.connect(self.inference_view.on_model_loaded)
+        self.inference_view.on_model_loaded() # Call once at startup
+
+        # --- Setup for scrollable config tab ---
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_area.setWidget(self.json_model_view)
+
+        config_tab_layout = QVBoxLayout(self.tab_config)
+        config_tab_layout.setContentsMargins(0, 0, 0, 0)
+        config_tab_layout.addWidget(scroll_area)
+
+        # This is no longer needed as we use a layout with a scroll area
+        # self.tab_config.setLayout(self.json_model_view)
 
     def update_all_views(self):
         """Update all child views with the new model data."""
@@ -193,6 +222,43 @@ class ModelView(QFrame):
         dialog.validationTestCompleted.connect(self.on_validation_completed)
         dialog.exec()
 
+    def start_detector_training(self):
+        """Slot to initiate the YOLO detector training process."""
+        model_data = self.parent_wnd.model_json.model
+        if not model_data:
+            QMessageBox.warning(self, "No Model Data", "Please load a model configuration first.")
+            return
+
+        dialog = DetectorTrainingDialog(model_data, self)
+        dialog.exec()
+
+    @Slot()
+    def on_prepare_yolo_data_clicked(self):
+        """Slot to handle the 'Prepare YOLO Data' button click."""
+        model_data = self.parent_wnd.model_json.model
+        if not model_data:
+            QMessageBox.warning(self, "No Model Data", "Please load a model configuration first.")
+            return
+
+        source_path = model_data.annotation_dataset_path
+        destination_path = model_data.yolo_dataset_path
+        
+        prepare_yolo_dataset(source_path, destination_path, parent_widget=self)
+
+    @Slot()
+    def on_prepare_recognition_data_clicked(self):
+        """Slot to handle the 'Prepare Recognition Data' button click."""
+        model_data = self.parent_wnd.model_json.model
+        if not model_data:
+            QMessageBox.warning(self, "No Model Data", "Please load a model configuration first.")
+            return
+
+        source_path = model_data.annotation_dataset_path
+        destination_path = model_data.model_train_dataset
+        detector_path = model_data.detector_model_path
+
+        prepare_recognition_dataset(source_path, destination_path, detector_path, model_data, parent_widget=self)
+
     @Slot(object)
     def on_training_completed(self, result):
         """Receives results from the training dialog and updates relevant views."""
@@ -218,18 +284,18 @@ class ModelView(QFrame):
         """Receives validation results and passes them to the results view."""
         self.results_view.update_validation_results(results)
 
-class ModelJsonView(QVBoxLayout):
+class ModelJsonView(QWidget):
     jsonLoaded = Signal(str)
 
     def __init__(self, parent_wnd = None):
         super().__init__()
         self.parent_wnd = parent_wnd
 
-        #json_layout = QVBoxLayout(self)
+        layout = QVBoxLayout(self)
         
         #buttons
         json_actions_row = QHBoxLayout()
-
+        
         open_json_btn = QPushButton("Carregar")
         open_json_btn.setMaximumHeight(35)
         open_json_btn.setMaximumWidth(100)
@@ -270,7 +336,7 @@ class ModelJsonView(QVBoxLayout):
         json_actions_row.addWidget(open_json_btn)
         json_actions_row.addWidget(save_json_btn)
 
-        self.addLayout(json_actions_row)
+        layout.addLayout(json_actions_row)
 
         #Form
         json_group_box = QGroupBox("Informações do modelo IA")
@@ -433,6 +499,96 @@ class ModelJsonView(QVBoxLayout):
 
         json_form_layout.addRow("Validação:", json_testdataset_row)
 
+        # --- YOLO Dataset Path ---
+        yolo_dataset_row = QHBoxLayout()
+        self.json_yolodataset_edit = QLineEdit()
+        self.json_yolodataset_edit.setFixedWidth(520)
+        self.json_yolodataset_edit.setStyleSheet("""
+            QLineEdit {
+                background-color: rgba(0, 0, 0, 10);
+                color: white;
+                border: 2px solid white;
+                border-radius: 5px;
+                padding: 5px;
+            }
+        """)
+        yolo_dataset_btn = QPushButton()
+        yolo_dataset_icon = QIcon(":icons/icons/crosshair.svg")
+        yolo_dataset_btn.setIcon(yolo_dataset_icon)
+        yolo_dataset_btn.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(0, 0, 0, 10);
+                color: white;
+                border: 2px solid white;
+                border-radius: 5px;
+                padding: 5px;
+            }
+        """)
+        yolo_dataset_btn.clicked.connect(self.browse_yolo_folder)
+        yolo_dataset_row.addWidget(self.json_yolodataset_edit)
+        yolo_dataset_row.addWidget(yolo_dataset_btn)
+        json_form_layout.addRow("Detector Dataset (YOLO):", yolo_dataset_row)
+
+        # --- Detector Model Path ---
+        detector_model_row = QHBoxLayout()
+        self.json_detectormodel_edit = QLineEdit()
+        self.json_detectormodel_edit.setFixedWidth(520)
+        self.json_detectormodel_edit.setStyleSheet("""
+            QLineEdit {
+                background-color: rgba(0, 0, 0, 10);
+                color: white;
+                border: 2px solid white;
+                border-radius: 5px;
+                padding: 5px;
+            }
+        """)
+        detector_model_btn = QPushButton()
+        detector_model_icon = QIcon(":icons/icons/cpu.svg")
+        detector_model_btn.setIcon(detector_model_icon)
+        detector_model_btn.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(0, 0, 0, 10);
+                color: white;
+                border: 2px solid white;
+                border-radius: 5px;
+                padding: 5px;
+            }
+        """)
+        detector_model_btn.clicked.connect(self.browse_detector_model)
+        detector_model_row.addWidget(self.json_detectormodel_edit)
+        detector_model_row.addWidget(detector_model_btn)
+        json_form_layout.addRow("Detector Model:", detector_model_row)
+
+        # --- Annotation Dataset Path ---
+        annotation_dataset_row = QHBoxLayout()
+        self.json_annotationdataset_edit = QLineEdit()
+        self.json_annotationdataset_edit.setFixedWidth(520)
+        self.json_annotationdataset_edit.setStyleSheet("""
+            QLineEdit {
+                background-color: rgba(0, 0, 0, 10);
+                color: white;
+                border: 2px solid white;
+                border-radius: 5px;
+                padding: 5px;
+            }
+        """)
+        annotation_dataset_btn = QPushButton()
+        annotation_dataset_icon = QIcon(":icons/icons/edit.svg")
+        annotation_dataset_btn.setIcon(annotation_dataset_icon)
+        annotation_dataset_btn.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(0, 0, 0, 10);
+                color: white;
+                border: 2px solid white;
+                border-radius: 5px;
+                padding: 5px;
+            }
+        """)
+        annotation_dataset_btn.clicked.connect(self.browse_annotation_folder)
+        annotation_dataset_row.addWidget(self.json_annotationdataset_edit)
+        annotation_dataset_row.addWidget(annotation_dataset_btn)
+        json_form_layout.addRow("Annotation Dataset:", annotation_dataset_row)
+
         json_bottom_data_widget = QWidget()
         json_bottom_data_widget.setFixedHeight(80)
         json_bottom_data = QHBoxLayout()
@@ -485,7 +641,7 @@ class ModelJsonView(QVBoxLayout):
 
         json_group_box.setLayout(json_form_layout)
 
-        self.addWidget(json_group_box)
+        layout.addWidget(json_group_box)
 
     
 
@@ -493,7 +649,7 @@ class ModelJsonView(QVBoxLayout):
         if not self.parent_wnd.model_json:
             return False
         
-        if self.json_modelname_edit.text == "" or self.json_encoderfile_edit.text == "" or self.json_filename_edit.text == "":
+        if self.json_modelname_edit.text() == "" or self.json_encoderfile_edit.text() == "" or self.json_filename_edit.text() == "":
             return False
         
         try:
@@ -504,6 +660,9 @@ class ModelJsonView(QVBoxLayout):
                     self.json_encoderfile_edit.text(), 
                     self.json_traindataset_edit.text(),
                     self.json_testdataset_edit.text(),
+                    self.json_yolodataset_edit.text(),
+                    self.json_annotationdataset_edit.text(),
+                    self.json_detectormodel_edit.text(),
                     list(self.json_classes_edit.text()), # Convert string back to list of chars
                     self.json_epochs_edit.value(),
                     self.json_imageheight_edit.value(),
@@ -515,14 +674,22 @@ class ModelJsonView(QVBoxLayout):
                 self.parent_wnd.model_json.model.encoder_filename =  self.json_encoderfile_edit.text() 
                 self.parent_wnd.model_json.model.model_train_dataset =  self.json_traindataset_edit.text()
                 self.parent_wnd.model_json.model.model_test_dataset =  self.json_testdataset_edit.text()
+                self.parent_wnd.model_json.model.annotation_dataset_path = self.json_annotationdataset_edit.text()
+                self.parent_wnd.model_json.model.detector_model_path = self.json_detectormodel_edit.text()
+                self.parent_wnd.model_json.model.yolo_dataset_path = self.json_yolodataset_edit.text()
                 self.parent_wnd.model_json.model.model_classes = list(self.json_classes_edit.text())
                 self.parent_wnd.model_json.model.train_epochs = self.json_epochs_edit.value()
                 self.parent_wnd.model_json.model.image_height = self.json_imageheight_edit.value()
                 self.parent_wnd.model_json.model.image_width = self.json_imagewidth_edit.value()
 
-            self.parent_wnd.model_json.save_to_file(self.json_filename_edit.text())
-            return True
-        except:
+            if self.parent_wnd.model_json.save_to_file(self.json_filename_edit.text()):
+                QMessageBox.information(self, "Sucesso", "Arquivo JSON salvo com sucesso!")
+                return True
+            else:
+                QMessageBox.warning(self, "Falha ao Salvar", "Não foi possível salvar o arquivo JSON.")
+                return False
+        except Exception as e:
+            QMessageBox.critical(self, "Erro", f"Ocorreu um erro inesperado ao salvar:\n{e}")
             return False
 
 
@@ -541,9 +708,8 @@ class ModelJsonView(QVBoxLayout):
     def open_dir(self):
         dir_name = QFileDialog.getExistingDirectory(caption="Selecione um diretorio")
         if dir_name:
-            path = Path(dir_name)
-            
-        return path
+            return Path(dir_name)
+        return None
     
     def browse_filename(self):
         filename = self.open_file_json()
@@ -564,6 +730,24 @@ class ModelJsonView(QVBoxLayout):
         if not dir:
             return
         self.json_testdataset_edit.setText(dir.as_posix())
+
+    def browse_yolo_folder(self):
+        dir = self.open_dir()
+        if not dir:
+            return
+        self.json_yolodataset_edit.setText(dir.as_posix())
+
+    def browse_annotation_folder(self):
+        dir = self.open_dir()
+        if not dir:
+            return
+        self.json_annotationdataset_edit.setText(dir.as_posix())
+
+    def browse_detector_model(self):
+        filename = self.open_file_any()
+        if not filename:
+            return
+        self.json_detectormodel_edit.setText(filename)
 
 
 
@@ -594,6 +778,9 @@ class ModelJsonView(QVBoxLayout):
         self.json_encoderfile_edit.setText(self.parent_wnd.model_json.model.encoder_filename)
         self.json_traindataset_edit.setText(self.parent_wnd.model_json.model.model_train_dataset)
         self.json_testdataset_edit.setText(self.parent_wnd.model_json.model.model_test_dataset)
+        self.json_annotationdataset_edit.setText(self.parent_wnd.model_json.model.annotation_dataset_path)
+        self.json_detectormodel_edit.setText(self.parent_wnd.model_json.model.detector_model_path)
+        self.json_yolodataset_edit.setText(self.parent_wnd.model_json.model.yolo_dataset_path)
         # Join the list of classes into a string for display
         self.json_classes_edit.setText("".join(self.parent_wnd.model_json.model.model_classes))
         self.json_epochs_edit.setValue(int(self.parent_wnd.model_json.model.train_epochs))

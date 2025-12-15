@@ -192,6 +192,44 @@ class pvVisionLib():
         print(f"Saved {len(characters)} character samples to {output_dir}")
         return samples
     
+    def crop_and_preprocess_for_training(self, img, binary_img, characters):
+        """
+        Crops characters, preprocesses them for training (padding, resizing, binarizing),
+        and returns them as a dictionary of samples.
+        """
+        samples = {}
+        for i, (x, y, w, h) in enumerate(characters):
+            # 1. Crop the character from the binarized image for cleaner data
+            char_image = binary_img[y:y+h, x:x+w]
+
+            # 2. Add padding to make it square to avoid distortion
+            height, width = char_image.shape
+            if height > width:
+                pad_left = (height - width) // 2
+                pad_right = height - width - pad_left
+                # Use 0 for black padding since it's a binary image (0=black, 255=white)
+                char_image = cv2.copyMakeBorder(char_image, 0, 0, pad_left, pad_right, cv2.BORDER_CONSTANT, value=[0])
+            elif width > height:
+                pad_top = (width - height) // 2
+                pad_bottom = width - height - pad_top
+                char_image = cv2.copyMakeBorder(char_image, pad_top, pad_bottom, 0, 0, cv2.BORDER_CONSTANT, value=[0])
+
+            # 3. Resize to the model's expected input size from config_ini
+            # The CNN expects grayscale, so we don't convert to RGB here.
+            resized_char = cv2.resize(char_image, (config_ini.IMG_WIDTH, config_ini.IMG_HEIGHT))
+
+            samples.update({str(i): {"char": "?", "box": {"x": x, "y": y, "w": w, "h": h}, "image": resized_char}})
+
+        return samples
+
+    def collect_and_preprocess_samples(self, image_path, threshold, pixel, sigma, space):
+        """A new process that segments characters and preprocesses them for training."""
+        img = cv2.imread(image_path)
+        gray = self.convert_to_gray(img)
+        binary = self.convert_binary(gray, pixel, sigma, space, threshold)
+        characters = self.find_characters(binary)
+        samples = self.crop_and_preprocess_for_training(img, binary, characters)
+        return img, binary, characters, samples
     
         
         

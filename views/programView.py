@@ -16,6 +16,7 @@ class ProgramView(QtWidgets.QWidget):
     camera_width = 0
     camera_height = 0
     model_json = ModelJson()
+    segmentation_view = None
     
     def __init__(self, width, height):
         super().__init__()
@@ -47,6 +48,7 @@ class ProgramView(QtWidgets.QWidget):
         card_content = CustomCardContent(self)
         card_content.title_label.setText("Segmentação de caracteres")
         card.set_content(card_content)
+        self.segmentation_view = card_content.image_segmentation_box
         
         self.data_col.addWidget(card)
         

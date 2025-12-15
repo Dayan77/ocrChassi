@@ -15,6 +15,11 @@ from PySide6.QtWidgets import (
     QSpinBox, QTimeEdit, QGroupBox, QTabWidget
 )
 
+try:
+    from ultralytics import YOLO
+except ImportError:
+    YOLO = None
+
 from PySide6.QtGui import QColor, QIcon, QPixmap
 from qt_material import apply_stylesheet
 
@@ -199,6 +204,23 @@ class ImageSegmentationView(QFrame):
             }
         """)
         test_button.clicked.connect(self.test_pytesseract)
+
+        generate_data_btn = QPushButton("Gerar Dados de Treino")
+        generate_data_btn.setMaximumHeight(35)
+        generate_data_btn.setMinimumWidth(120)
+        generate_data_btn.setMaximumWidth(120)
+        generate_data_icon = QIcon(":icons/icons-cl/zap.svg") 
+        generate_data_btn.setIcon(generate_data_icon)
+        generate_data_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #0e6e4b; /* A distinct color */
+                color: white;                       
+                border: 2px solid white;
+                border-radius: 5px;
+                padding: 5px;
+            }
+        """)
+        generate_data_btn.clicked.connect(self.on_generate_training_data_clicked)
 
         buttons.addWidget(test_button)
         image_buttons.addLayout(buttons)
@@ -404,6 +426,33 @@ class ImageSegmentationView(QFrame):
     def update_w(self, values):
         self.w_min = values[0]
 
+    def get_segmentation_params(self):
+        """Returns a dictionary of the current segmentation parameters."""
+        return {
+            'diameter': self.diameter,
+            'sigma': self.sigma,
+            'space': self.space,
+            'threshold': self.threshold
+        }
+
+    def on_generate_training_data_clicked(self):
+        """Slot for the 'Generate Training Data' button."""
+        if self.camB_radio.isChecked():
+            cam_index = 1
+        else:
+            cam_index = 0
+
+        if not self.parent_wnd.cameras[cam_index].image_path:
+            QMessageBox.warning(self, "Sem Imagem", "Por favor, carregue uma imagem na câmera selecionada primeiro.")
+            return
+
+        visionLib = pv_visionlib.pvVisionLib()
+        params = self.get_segmentation_params()
+        
+        img, binary_img, characters, samples = visionLib.collect_and_preprocess_samples(self.parent_wnd.cameras[cam_index].image_path, params['threshold'], params['diameter'], params['sigma'], params['space'])
+        self.refresh_image(binary_img)
+        self.populate_results(characters, samples, cam_index)
+    
     
     def test_pytesseract(self):
         if self.camB_radio.isChecked():
@@ -413,7 +462,8 @@ class ImageSegmentationView(QFrame):
 
         visionLib = pv_visionlib.pvVisionLib()
         
-        img, bin, boxes, samples, chars = visionLib.collect_samples(self.parent_wnd.cameras[cam_index].image_path, '../models/', 'ocr_samples', self.threshold, self.diameter, self.sigma, self.space, self.min_w, self.max_w, self.min_h, self.max_h, self.min_a, self.max_a)
+        params = self.get_segmentation_params()
+        img, bin, boxes, samples, chars = visionLib.collect_samples(self.parent_wnd.cameras[cam_index].image_path, '../models/', 'ocr_samples', params['threshold'], params['diameter'], params['sigma'], params['space'], self.min_w, self.max_w, self.min_h, self.max_h, self.min_a, self.max_a)
         self.refresh_image(bin)
 
         cam_index = 1 if self.camB_radio.isChecked() == True else 0
@@ -445,6 +495,7 @@ class ImageSegmentationView(QFrame):
         results_actions_row = QHBoxLayout()
         
         save_samples_btn = QPushButton("Exportar")
+        save_samples_btn.setToolTip("Exportar anotações manuais para arquivo .json")
         save_samples_btn.setMaximumHeight(35)
         save_samples_btn.setMaximumWidth(100)
         save_samples_icon = QIcon(":icons/icons/external-link.svg") 
@@ -531,11 +582,32 @@ class ImageSegmentationView(QFrame):
             }
         """)
 
+        detect_chars_btn = QPushButton("Detectar Caracteres (IA)")
+        detect_chars_btn.setToolTip("Usa o modelo de detecção para encontrar e criar ROIs automaticamente.")
+        detect_chars_btn.setMaximumHeight(35)
+        detect_chars_btn.setFixedWidth(180)
+        detect_chars_icon = QIcon(":icons/icons/cpu.svg")
+        detect_chars_btn.setIcon(detect_chars_icon)
+        detect_chars_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #0e6e4b; /* A distinct color */
+                color: white;
+                border: 2px solid white;
+                border-radius: 5px;
+                padding: 5px;
+            }
+            QPushButton:hover {
+                background-color: #1a8a61;
+            }
+        """)
+        detect_chars_btn.clicked.connect(self.on_detect_characters_clicked)
+
         results_actions_row.addWidget(refresh_samples_btn)
         results_actions_row.addWidget(add_roi_btn)
         results_actions_row.addWidget(save_samples_btn)
         results_actions_row.addWidget(delete_samples_btn)
         results_actions_row.addWidget(clear_samples_btn)
+        results_actions_row.addWidget(detect_chars_btn)
 
         self.cam_index = cam_index
 
@@ -692,6 +764,48 @@ class ImageSegmentationView(QFrame):
             QMessageBox.information(self, "Sucesso", "Imagens exportadas para treinamento com sucesso!")
         else:
             QMessageBox.warning(self, "Falha", "Ocorreu um erro ao exportar as imagens para treinamento.")
+
+    def on_detect_characters_clicked(self):
+        """
+        Uses the trained YOLO model to detect characters in the current image
+        and adds them as ROIs.
+        """
+        if not YOLO:
+            QMessageBox.critical(self, "Erro", "'ultralytics' package not found. Please install it.")
+            return
+
+        model_data = self.parent_wnd.model_json.model
+        if not model_data or not model_data.detector_model_path or not os.path.exists(model_data.detector_model_path):
+            QMessageBox.warning(self, "Modelo não Encontrado", "Caminho para o 'Detector Model' não está configurado ou o arquivo não foi encontrado.")
+            return
+
+        cam_index = 1 if self.camB_radio.isChecked() else 0
+        source_image = self.parent_wnd.cameras[cam_index].actual_image
+
+        if source_image is None:
+            QMessageBox.warning(self, "Sem Imagem", "Nenhuma imagem carregada na câmera selecionada.")
+            return
+
+        try:
+            detector_model = YOLO(model_data.detector_model_path)
+            detection_results = detector_model(source_image, verbose=False)
+            boxes = detection_results[0].boxes.xyxy.cpu().numpy()
+
+            if len(boxes) == 0:
+                QMessageBox.information(self, "Nenhum Caractere", "O detector não encontrou nenhum caractere na imagem.")
+                return
+
+            # Convert YOLO boxes (xyxy) to the dictionary format expected by draw_rois_dict (xywh)
+            rois_dict = {}
+            for i, box in enumerate(boxes):
+                x1, y1, x2, y2 = map(int, box)
+                rois_dict[str(i)] = {"char": "?", "box": {"x": x1, "y": y1, "w": x2 - x1, "h": y2 - y1}}
+
+            # Clear existing ROIs and draw the new ones
+            self.parent_wnd.cameras[cam_index].draw_rois_dict(rois_dict)
+            self.refresh_rois_listview() # Update the character list view
+        except Exception as e:
+            QMessageBox.critical(self, "Erro na Detecção", f"Ocorreu um erro durante a detecção: {e}")
 
     def updateCV_Image(self, image):
         lib = pv_visionlib.pvVisionLib()
