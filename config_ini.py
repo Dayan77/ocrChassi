@@ -20,7 +20,7 @@ cam_wb_temperature = [ 4000, 4000] # Manual white balance
 cam_auto_focus = [ 0, 0]    # 1 for auto, 0 for manual
 cam_focus = [ 255, 0]         # Manual focus value (0-255)
 
-cam_files_path = ""
+cam_files_path = "/Users/dayansantos/Dev/ocrChassi/models/sense_chassi_factory"
 default_roi_x = 50
 default_roi_y = 50
 default_roi_w = 30

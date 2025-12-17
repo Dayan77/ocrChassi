@@ -280,19 +280,22 @@ class CameraView(QtWidgets.QWidget):
             QtWidgets.QMessageBox.information(self, "Image Saved", f"Image successfully saved to:\n{file_path}")
 
     def previous_image(self):
-        self.disable_btns() #disable buttons to avoid multiple clicks
-        self.image_index = self.image_index-1
+        try:
+            self.disable_btns() #disable buttons to avoid multiple clicks
+            self.image_index = self.image_index-1
 
-        self.images_list = self.refresh_images_list()
+            self.images_list = self.refresh_images_list()
 
-        if self.image_index < 0:
-            self.image_index = len(self.images_list)-1 
-        
-        self.label.setImage( self.load_image_path(self.images_list[self.image_index]) )
-        self.image_path = self.images_list[self.image_index]
-        self.search_annotation_file(self.images_list[self.image_index])
-        sleep(1)
-        self.enable_btns() #enable buttons after image is loaded
+            if self.image_index < 0:
+                self.image_index = len(self.images_list)-1 
+            
+            self.label.setImage( self.load_image_path(self.images_list[self.image_index]) )
+            self.image_path = self.images_list[self.image_index]
+            self.search_annotation_file(self.images_list[self.image_index])
+            sleep(100)
+            self.enable_btns() #enable buttons after image is loaded
+        except Exception as e:
+            print(f"Error loading previous image: {e}")
 
     
     def disable_btns(self):
@@ -311,19 +314,22 @@ class CameraView(QtWidgets.QWidget):
 
 
     def next_image(self):
-        self.disable_btns() #disable buttons to avoid multiple clicks
-        self.image_index = self.image_index+1
+        try:
+            self.disable_btns() #disable buttons to avoid multiple clicks
+            self.image_index = self.image_index+1
 
-        self.images_list = self.refresh_images_list()
+            self.images_list = self.refresh_images_list()
 
-        if self.image_index > len(self.images_list)-1:
-            self.image_index = 0
-        
-        self.label.setImage( self.load_image_path(self.images_list[self.image_index]) )
-        self.image_path = self.images_list[self.image_index]
-        self.search_annotation_file(self.images_list[self.image_index])
-        sleep(1)
-        self.enable_btns() #enable buttons after image is loaded
+            if self.image_index > len(self.images_list)-1:
+                self.image_index = 0
+            
+            self.label.setImage( self.load_image_path(self.images_list[self.image_index]) )
+            self.image_path = self.images_list[self.image_index]
+            self.search_annotation_file(self.images_list[self.image_index])
+            sleep(100)
+            self.enable_btns() #enable buttons after image is loaded
+        except Exception as e:
+            print(f"Error loading next image: {e}")
 
 
     def refresh_images_list(self):
@@ -410,7 +416,7 @@ class CameraView(QtWidgets.QWidget):
         file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self,
             "Select Image File",
-            "", # Default directory (empty string opens user's home directory)
+            config_ini.cam_files_path, # Default directory (empty string opens user's home directory)
             "Image Files (*.png *.jpg *.jpeg *.bmp)" # File filter
         )
         
