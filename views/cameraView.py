@@ -46,6 +46,7 @@ class CameraView(QtWidgets.QWidget):
     def __init__(self, index, width, height):
         super().__init__()
 
+        self.ready = False
         self.images_folder = config_ini.cam_files_path
         self.image_index = -1
 
@@ -280,20 +281,27 @@ class CameraView(QtWidgets.QWidget):
             QtWidgets.QMessageBox.information(self, "Image Saved", f"Image successfully saved to:\n{file_path}")
 
     def previous_image(self):
+        if not self.ready:
+            return
+        
         try:
+            self.ready = False
             self.disable_btns() #disable buttons to avoid multiple clicks
             self.image_index = self.image_index-1
 
             self.images_list = self.refresh_images_list()
 
-            if self.image_index < 0:
+            if self.image_index < 0 or self.image_index > len(self.images_list)-1:
                 self.image_index = len(self.images_list)-1 
             
+            print(f"Next image index: {self.image_index} / {len(self.images_list)}")
             self.label.setImage( self.load_image_path(self.images_list[self.image_index]) )
             self.image_path = self.images_list[self.image_index]
-            self.search_annotation_file(self.images_list[self.image_index])
-            sleep(100)
+            print(f"Getting annotation for image index: {self.image_index} / {len(self.images_list)}")
+            #self.search_annotation_file(self.images_list[self.image_index])
+            #sleep(100)
             self.enable_btns() #enable buttons after image is loaded
+            self.ready = True
         except Exception as e:
             print(f"Error loading previous image: {e}")
 
@@ -314,20 +322,27 @@ class CameraView(QtWidgets.QWidget):
 
 
     def next_image(self):
+        if not self.ready:
+            return
+        
         try:
+            self.ready = False
             self.disable_btns() #disable buttons to avoid multiple clicks
             self.image_index = self.image_index+1
 
             self.images_list = self.refresh_images_list()
 
-            if self.image_index > len(self.images_list)-1:
+            if self.image_index > len(self.images_list)-1 or   self.image_index < 0:
                 self.image_index = 0
             
+            print(f"Next image index: {self.image_index} / {len(self.images_list)}")
             self.label.setImage( self.load_image_path(self.images_list[self.image_index]) )
             self.image_path = self.images_list[self.image_index]
-            self.search_annotation_file(self.images_list[self.image_index])
+            print(f"Getting annotation for image index: {self.image_index} / {len(self.images_list)}")
+            #self.search_annotation_file(self.images_list[self.image_index])
             sleep(100)
             self.enable_btns() #enable buttons after image is loaded
+            self.ready = True
         except Exception as e:
             print(f"Error loading next image: {e}")
 
@@ -336,7 +351,7 @@ class CameraView(QtWidgets.QWidget):
         image_extensions = ('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff')
         image_files = []
         for filename in os.listdir(self.images_folder):
-            if filename.lower().endswith(image_extensions):
+            if filename.lower().endswith(image_extensions) and filename.startswith("._") == False:
                 image_files.append(os.path.join(self.images_folder, filename))
         return image_files
     
@@ -348,28 +363,36 @@ class CameraView(QtWidgets.QWidget):
 
             if len(image_annotations) > 0:
                 self.draw_rois_json( image_annotations[0].as_posix())
-                return image_annotations[0].as_posix()
+                return True#image_annotations[0].as_posix()
             else:
-                self.delete_all_rois()
+                if len(self.rois) > 0:
+                    self.delete_all_rois()
                 return None
-        except:
-            self.delete_all_rois()
+        except Exception as e:
+            print(f"Error loading annotation file: {e}")
+            if len(self.rois) > 0:
+                self.delete_all_rois()
             return None
 
     
     def draw_rois_json(self, json_file):
-        dict_from_file = None
-        with open(json_file, 'r') as f:
-            dict_from_file = json.load(f)
+        try:
+            dict_from_file = None
+            with open(json_file, 'r') as f:
+                dict_from_file = json.load(f)
 
-        if dict_from_file:
-            self.draw_rois_dict( dict_from_file)
+            if dict_from_file:
+                self.draw_rois_dict( dict_from_file)
+        except Exception as e:
+            print(f"Error loading annotation file: {e}")
+
 
 
 
     def draw_rois_dict(self, rois):
-        self.delete_all_rois()
-        self.delete_all_rois()
+        if len(self.rois) > 0:
+            self.delete_all_rois()
+        #self.delete_all_rois()
         self.image_chars = ""
         
         for i in rois:
@@ -424,6 +447,7 @@ class CameraView(QtWidgets.QWidget):
             self.label.setImage( self.load_image_path(file_path) )
             self.image_path = file_path
             self.images_folder = os.path.dirname(file_path)
+            self.ready = True
             
 
 
@@ -541,8 +565,9 @@ class CameraView(QtWidgets.QWidget):
     
     #######ROI########
     def draw_rois(self, img, characters):
-        
-        self.delete_all_rois()
+        if len(self.rois) > 0:
+            self.delete_all_rois()
+
         self.actual_image = img
         # Create a rectangular ROI item
         # The first argument is the initial position [x, y], the second is the initial size [w, h].
