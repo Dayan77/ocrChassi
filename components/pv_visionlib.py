@@ -7,7 +7,7 @@ os.environ["KERAS_BACKEND"] = "tensorflow"
 #import keras
 #from keras import layers
 
-import matplotlib.pyplot as plt
+#import matplotlib.pyplot as plt
 import numpy as np
 import random
 import tensorflow as tf

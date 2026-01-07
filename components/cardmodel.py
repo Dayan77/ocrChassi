@@ -17,7 +17,7 @@ from PySide6.QtGui import QColor, QIcon, QPixmap
 from qt_material import apply_stylesheet
 
 import pv_visionlib
-from components.datasetview import DatasetView, prepare_yolo_dataset, prepare_recognition_dataset
+from components.datasetview import DatasetView#, prepare_yolo_dataset, prepare_recognition_dataset
 from components.trainingsummaryview import TrainingSummaryView
 from components.trainingprocess import TrainingProcessDialog
 from components.resultsview import ResultsView
@@ -234,7 +234,7 @@ class ModelView(QFrame):
 
     @Slot()
     def on_prepare_yolo_data_clicked(self):
-        """Slot to handle the 'Prepare YOLO Data' button click."""
+        """Slot to handle the 'Prepare Detector(YOLO) Data' button click."""
         model_data = self.parent_wnd.model_json.model
         if not model_data:
             QMessageBox.warning(self, "No Model Data", "Please load a model configuration first.")
@@ -243,7 +243,7 @@ class ModelView(QFrame):
         source_path = model_data.annotation_dataset_path
         destination_path = model_data.yolo_dataset_path
         
-        prepare_yolo_dataset(source_path, destination_path, parent_widget=self)
+        self.dataset_view.prepare_yolo_dataset(source_path, destination_path, parent_widget=self)
 
     @Slot()
     def on_prepare_recognition_data_clicked(self):
@@ -257,7 +257,7 @@ class ModelView(QFrame):
         destination_path = model_data.model_train_dataset
         detector_path = model_data.detector_model_path
 
-        prepare_recognition_dataset(source_path, destination_path, detector_path, model_data, parent_widget=self)
+        self.dataset_view.prepare_recognition_dataset(source_path, destination_path, detector_path, model_data, parent_widget=self)
 
     @Slot(object)
     def on_training_completed(self, result):
