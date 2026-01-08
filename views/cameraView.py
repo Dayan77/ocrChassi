@@ -600,6 +600,10 @@ class CameraView(QtWidgets.QWidget):
             # Add the ROI to the view
             self.label.getView().addItem(self.rois[len(self.rois)-1])
 
+            #Add label
+            # label = pg.TextItem
+            # self.label.addLabel('?', 0, 0, color=(255,0,0), size='12pt', bold=True)
+
             # Connect the ROI signal to a slot
             self.rois[len(self.rois)-1].sigRegionChanged.connect(self.on_roi_changed)
             #self.rois[len(self.rois)-1].sigClicked.connect(lambda r=self.rois[len(self.rois)-1]: self.on_roi_selected(r))
