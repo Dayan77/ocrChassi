@@ -298,8 +298,8 @@ class CameraView(QtWidgets.QWidget):
             self.label.setImage( self.load_image_path(self.images_list[self.image_index]) )
             self.image_path = self.images_list[self.image_index]
             print(f"Getting annotation for image index: {self.image_index} / {len(self.images_list)}")
-            #self.search_annotation_file(self.images_list[self.image_index])
-            #sleep(100)
+            self.search_annotation_file(self.images_list[self.image_index])
+            sleep(100)
             self.enable_btns() #enable buttons after image is loaded
             self.ready = True
         except Exception as e:
@@ -335,12 +335,13 @@ class CameraView(QtWidgets.QWidget):
             if self.image_index > len(self.images_list)-1 or   self.image_index < 0:
                 self.image_index = 0
             
+            print(f"Getting annotation for image index: {self.image_index} / {len(self.images_list)}")
+            self.search_annotation_file(self.images_list[self.image_index])
+            sleep(100)
             print(f"Next image index: {self.image_index} / {len(self.images_list)}")
             self.label.setImage( self.load_image_path(self.images_list[self.image_index]) )
             self.image_path = self.images_list[self.image_index]
-            print(f"Getting annotation for image index: {self.image_index} / {len(self.images_list)}")
-            #self.search_annotation_file(self.images_list[self.image_index])
-            sleep(100)
+            
             self.enable_btns() #enable buttons after image is loaded
             self.ready = True
         except Exception as e:
@@ -360,18 +361,18 @@ class CameraView(QtWidgets.QWidget):
     def search_annotation_file(self, image_file):
         try:
             image_annotations = list(Path(self.images_folder).glob(os.path.basename(image_file+".json")))
-
+            print(f"Searching annotation for image: {image_annotations}")
             if len(image_annotations) > 0:
                 self.draw_rois_json( image_annotations[0].as_posix())
                 return True#image_annotations[0].as_posix()
             else:
                 if len(self.rois) > 0:
-                    self.delete_all_rois()
+                    self.delete_all_rois(self.rois)
                 return None
         except Exception as e:
             print(f"Error loading annotation file: {e}")
             if len(self.rois) > 0:
-                self.delete_all_rois()
+                self.delete_all_rois(self.rois)
             return None
 
     
@@ -391,9 +392,18 @@ class CameraView(QtWidgets.QWidget):
 
     def draw_rois_dict(self, rois):
         if len(self.rois) > 0:
-            self.delete_all_rois()
+            self.delete_all_rois(self.rois)
+       
+        if not rois:
+            return
+        
+        if not self.rois:   
+            self.rois = []
+
         #self.delete_all_rois()
+        # self.rois = []
         self.image_chars = ""
+        print(f"Drawing rois: {len(rois)}")
         
         for i in rois:
             x = rois[i]['box']['x']
@@ -566,7 +576,7 @@ class CameraView(QtWidgets.QWidget):
     #######ROI########
     def draw_rois(self, img, characters):
         if len(self.rois) > 0:
-            self.delete_all_rois()
+            self.delete_all_rois(self.rois)
 
         self.actual_image = img
         # Create a rectangular ROI item
@@ -747,17 +757,24 @@ class CameraView(QtWidgets.QWidget):
         # )
 
 
-    def delete_all_rois(self):
-        if not self.rois:
+    def delete_all_rois(self, rois):
+        if not rois:
             print("Não há ROIs para remover.")
             return
 
-        print(f"Removindo todos os {len(self.rois)} ROIs...")
+        print(f"Removindo todos os {len(rois)} ROIs...")
         
-        for roi in self.rois:
-            self.label.getView().removeItem(roi)
-            
-        self.rois.clear()
+        lenRois  = len(self.label.getView().addedItems)
+        for i in range(lenRois):
+            if lenRois - i -1 < 0:
+                break
+
+            items = self.label.getView().addedItems[lenRois - i -1]
+             
+            if isinstance(items, pg.ROI):
+                self.label.getView().removeItem(items)
+        #self.label.getView().clear()
+        rois.clear()
         
         # 8. Limpa a seleção, pois todos foram deletados
         self.selected_roi = None 

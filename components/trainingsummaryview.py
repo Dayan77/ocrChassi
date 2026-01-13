@@ -92,7 +92,7 @@ class TrainingSummaryView(QWidget):
         self.train_detector_button.clicked.connect(self.startDetectorTrainingClicked)
         self.train_detector_button.setEnabled(False) # Enable when a model is loaded
 
-        self.prepare_yolo_button = QPushButton("Prepare YOLO Data")
+        self.prepare_yolo_button = QPushButton("Prepare Detector(YOLO) Data")
         prepare_icon = QIcon(":icons/icons/zap.svg")
         self.prepare_yolo_button.setIcon(prepare_icon)
         self.prepare_yolo_button.setMinimumHeight(40)
