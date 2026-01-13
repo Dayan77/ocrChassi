@@ -433,7 +433,7 @@ class DatasetView(QWidget):
             except Exception as e:
                 print(f"Error processing file {img_path}: {e}")
 
-    def _calculate_iou(boxA, boxB):
+    def _calculate_iou(self, boxA, boxB):
         # From [x, y, w, h] to [x1, y1, x2, y2]
         boxA_coords = [boxA['x'], boxA['y'], boxA['x'] + boxA['w'], boxA['y'] + boxA['h']]
         inter_x1 = max(boxA_coords[0], boxB[0])

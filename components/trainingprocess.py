@@ -29,7 +29,7 @@ except ImportError:
 try:
     import tensorflow as tf
     from tensorflow import keras
-    from tensorflow.keras import layers
+    from keras import layers
 except ImportError:
     print("TensorFlow/Keras not found. Training will not be available.")
     tf = None
@@ -224,8 +224,8 @@ def train_model_cnn(model_data, progress_callback, log_callback):
     )
 
     # --- 5. Save the Model and Return Stats ---
-    model.save(model_data.get_model_save_path())
-    log_callback(f"\n--- Training Finished. Model saved to: {model_data.get_model_save_path()} ---")
+    model.save(model_data.encoder_filename)  #get_model_save_path())
+    log_callback(f"\n--- Training Finished. Model saved to: {model_data.encoder_filename} ---")
 
     final_stats = {
         "final_accuracy": history.history['accuracy'][-1],
