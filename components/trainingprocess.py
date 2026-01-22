@@ -416,13 +416,13 @@ class TrainingProcessDialog(QDialog):
             self.thread.quit() # Ask the event loop to stop
             self.thread.wait(500) # Wait a bit for it to finish
         event.accept()
-        num_classes = len(self.class_names)
-        self.log_callback(f"Found {num_classes} classes: {', '.join(self.class_names)}\n")
+        num_classes = len(class_names)
+        log_callback(f"Found {num_classes} classes: {', '.join(class_names)}\n")
     
 
         # --- 3. Build CNN Model ---
         model = keras.Sequential([
-            layers.Rescaling(1./255, input_shape=(self.img_height, self.img_width, 1)),
+            layers.Rescaling(1./255, input_shape=(img_height, img_width, 1)),
             layers.Conv2D(16, 3, padding='same', activation='relu'),
             layers.MaxPooling2D(),
             layers.Conv2D(32, 3, padding='same', activation='relu'),
@@ -438,22 +438,22 @@ class TrainingProcessDialog(QDialog):
                     loss=tf.keras.losses.SparseCategoricalCrossentropy(),
                     metrics=['accuracy'])
         
-        model.summary(print_fn=lambda x: self.log_callback(x))
+        model.summary(print_fn=lambda x: log_callback(x))
 
         # --- 4. Train the Model ---
-        self.log_callback("\n--- Starting Model Fitting ---")
-        ui_callback = KerasProgressCallback(self.progress_callback, self.log_callback)
+        log_callback("\n--- Starting Model Fitting ---")
+        ui_callback = KerasProgressCallback(progress_callback, log_callback)
         history = model.fit(
-            self.train_ds,
-            validation_data=self.val_ds,
-            epochs=self.epochs,
+            train_ds,
+            validation_data=val_ds,
+            epochs=epochs,
             callbacks=[ui_callback],
             verbose=0 # We use our custom callback for logging
         )
 
         # --- 5. Save the Model and Return Stats ---
-        model.save(self.model_data.get_model_save_path())
-        self.log_callback(f"\n--- Training Finished. Model saved to: {self.model_data.get_model_save_path()} ---")
+        model.save(model_data.get_model_save_path())
+        log_callback(f"\n--- Training Finished. Model saved to: {model_data.get_model_save_path()} ---")
 
         final_stats = {
             "final_accuracy": history.history['accuracy'][-1],
@@ -464,7 +464,7 @@ class TrainingProcessDialog(QDialog):
         
         # Return both stats and the discovered class names
         # The class names are sorted alphabetically by image_dataset_from_directory
-        return final_stats, self.class_names
+        return final_stats, class_names
 
 
 class TrainingWorker(QObject):

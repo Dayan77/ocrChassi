@@ -352,8 +352,8 @@ class DatasetView(QWidget):
             if reply == QMessageBox.StandardButton.Yes:
                 shutil.rmtree(destination_path)
             else:
-                QMessageBox.information(parent_widget, "Limpeza Cancelada", "Dataset será adicionado.")
-                # return False
+                QMessageBox.information(parent_widget, "Cancelled", "Dataset preparation cancelled.")
+                return False
 
         # --- Create YOLO directory structure ---
         paths = {
@@ -477,8 +477,8 @@ class DatasetView(QWidget):
             if reply == QMessageBox.StandardButton.Yes:
                 shutil.rmtree(destination_path)
             else:
-                QMessageBox.information(parent_widget, "Sem limpeza", "Informações serão adicionadas.")
-                #return False
+                QMessageBox.information(parent_widget, "Cancelled", "Data preparation cancelled.")
+                return False
 
         os.makedirs(destination_path, exist_ok=True)
 
