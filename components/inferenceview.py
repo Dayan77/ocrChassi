@@ -1,15 +1,17 @@
 import os
+import time
 import cv2
 import numpy as np
 from PySide6.QtCore import Qt, Slot, QSize
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel,
     QGroupBox, QPushButton, QComboBox, QLineEdit, QMessageBox,
-    QListWidget, QListWidgetItem
+    QListWidget, QListWidgetItem, QMenu, QInputDialog, QSlider
 )
 from PySide6.QtGui import QPixmap, QImage
 
 import pv_visionlib
+import config_ini
 
 try:
     import tensorflow as tf
@@ -23,6 +25,8 @@ class InferenceResultItem(QWidget):
     """Custom widget for displaying a single character inference result."""
     def __init__(self, image_array, predicted_label, confidence, parent=None):
         super().__init__(parent)
+        self.predicted_label = predicted_label
+        self.image_array = image_array
         layout = QHBoxLayout(self)
         layout.setContentsMargins(5, 5, 5, 5)
         layout.setSpacing(10)
@@ -51,19 +55,24 @@ class InferenceResultItem(QWidget):
         info_layout.setContentsMargins(0, 0, 0, 0)
         info_layout.setSpacing(2)
 
-        predicted_label_text = QLabel(f"Predicted: <b>{predicted_label}</b>")
+        self.predicted_label_text = QLabel(f"Predicted: <b>{predicted_label}</b>")
         confidence_text = QLabel(f"Confidence: {confidence:.2f}%")
 
         if confidence < 70: # Highlight low-confidence predictions
-            predicted_label_text.setStyleSheet("color: orange;")
+            self.predicted_label_text.setStyleSheet("color: orange;")
 
-        info_layout.addWidget(predicted_label_text)
+        info_layout.addWidget(self.predicted_label_text)
         info_layout.addWidget(confidence_text)
 
         layout.addWidget(self.image_label)
         layout.addLayout(info_layout)
         layout.addStretch()
         self.setLayout(layout)
+
+    def update_label(self, new_label):
+        self.predicted_label = new_label
+        self.predicted_label_text.setText(f"Predicted: <b>{new_label}</b>")
+        self.predicted_label_text.setStyleSheet("color: green;")
 
 class InferenceView(QWidget):
     """
@@ -94,9 +103,22 @@ class InferenceView(QWidget):
         self.run_inference_btn.clicked.connect(self.run_inference)
         self.run_inference_btn.setEnabled(False) # Disabled until a model is loaded
 
+        self.save_btn = QPushButton("Salvar no Dataset")
+        self.save_btn.clicked.connect(self.save_to_dataset)
+        self.save_btn.setEnabled(False)
+
+        self.confidence_slider = QSlider(Qt.Orientation.Horizontal)
+        self.confidence_slider.setRange(0, 100)
+        self.confidence_slider.setValue(0)
+        self.confidence_label = QLabel("Confiança: 0%")
+        self.confidence_slider.valueChanged.connect(lambda v: self.confidence_label.setText(f"Confiança: {v}%"))
+
         controls_layout.addWidget(QLabel("Fonte da Imagem:"))
         controls_layout.addWidget(self.camera_select)
         controls_layout.addWidget(self.run_inference_btn)
+        controls_layout.addWidget(self.save_btn)
+        controls_layout.addWidget(self.confidence_label)
+        controls_layout.addWidget(self.confidence_slider)
         controls_layout.addStretch()
 
         # --- Middle section for results and characters ---
@@ -139,6 +161,8 @@ class InferenceView(QWidget):
         self.char_list_widget.setWrapping(True)
         self.char_list_widget.setResizeMode(QListWidget.ResizeMode.Adjust)
         self.char_list_widget.setSpacing(5)
+        self.char_list_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.char_list_widget.customContextMenuRequested.connect(self.show_context_menu)
         right_layout.addWidget(self.char_list_widget)
 
         middle_layout.addWidget(left_group, 1)
@@ -174,6 +198,14 @@ class InferenceView(QWidget):
             # Load both models
             self.detector_model = YOLO(detector_model_path)
             self.inference_model = keras.models.load_model(recognition_model_path)
+            
+            if config_ini.recognition_library == 'tensorflow':
+                self.inference_model = keras.models.load_model(recognition_model_path)
+            elif config_ini.recognition_library == 'pytorch':
+                # Placeholder for PyTorch model loading
+                print("PyTorch model loading not implemented.")
+                self.inference_model = None
+
             self.class_names = model_data.model_classes
             self.run_inference_btn.setEnabled(True)
             print("Inference and Detector models loaded successfully.")
@@ -190,8 +222,25 @@ class InferenceView(QWidget):
             QMessageBox.warning(self, "Modelo não Carregado", "Nenhum modelo de inferência foi carregado.")
             return
 
+        # Ensure we have access to the main program view and cameras
+        program_view = self.parent_wnd
+        if not program_view or not hasattr(program_view, 'cameras'):
+            curr = self.parent()
+            while curr:
+                if hasattr(curr, 'cameras'):
+                    program_view = curr
+                    break
+                curr = curr.parent()
+
+        if not program_view or not hasattr(program_view, 'cameras'):
+            QMessageBox.warning(self, "Erro", "Não foi possível acessar as câmeras.")
+            return
+
         cam_index = self.camera_select.currentIndex()
-        source_image = self.parent_wnd.cameras[cam_index].actual_image
+        if len(program_view.cameras) <= cam_index:
+            return
+
+        source_image = program_view.cameras[cam_index].actual_image
 
         if source_image is None:
             QMessageBox.warning(self, "Sem Imagem", "Nenhuma imagem carregada na câmera selecionada.")
@@ -222,8 +271,9 @@ class InferenceView(QWidget):
         img_with_boxes = source_image.copy()
         model_data = self.parent_wnd.model_json.model
         img_h, img_w = model_data.image_height, model_data.image_width
+        rois_dict = {}
 
-        for box in character_boxes:
+        for i, box in enumerate(character_boxes):
             x_min, y_min, x_max, y_max = map(int, box)
             
             # --- Preprocessing to match training data ---
@@ -249,11 +299,36 @@ class InferenceView(QWidget):
                 predicted_idx = np.argmax(prediction)
                 predicted_char = self.class_names[predicted_idx]
                 confidence = np.max(prediction) * 100
+            valid_prediction = False
+
+            if config_ini.recognition_library == 'tensorflow' and self.inference_model:
+                input_data = np.expand_dims(np.expand_dims(normalized_char, axis=-1), axis=0)
+                prediction = self.inference_model.predict(input_data, verbose=0)
+                if prediction.any():
+                    predicted_idx = np.argmax(prediction)
+                    predicted_char = self.class_names[predicted_idx]
+                    confidence = np.max(prediction) * 100
+                    valid_prediction = True
+            elif config_ini.recognition_library == 'pytorch':
+                # Placeholder for PyTorch inference
+                pass
+
+            if valid_prediction:
+                if confidence < self.confidence_slider.value():
+                    continue
+
                 predicted_string += predicted_char
 
             # Draw bounding box and label on the result image
             cv2.rectangle(img_with_boxes, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
             cv2.putText(img_with_boxes, predicted_char, (x_min, y_min - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+
+            # Store ROI for interactive camera view
+            rois_dict[str(i)] = {
+                "char": f"{predicted_char} ({confidence:.1f}%)",
+                "confidence": confidence,
+                "box": {"x": x_min, "y": y_min, "w": x_max - x_min, "h": y_max - y_min}
+            }
 
             # Add individual result to the list widget
             item = QListWidgetItem(self.char_list_widget)
@@ -262,14 +337,59 @@ class InferenceView(QWidget):
                 predicted_char,
                 confidence
             )
-            item.setSizeHint(QSize(150, 60))
+            item.setSizeHint(QSize(220, 60))
             self.char_list_widget.addItem(item)
             self.char_list_widget.setItemWidget(item, custom_widget)
 
+        self.save_btn.setEnabled(True)
         # Update UI
         self.predicted_text_label.setText(f"<b>{predicted_string}</b>")
 
-        # Compare with ground truth if available
+        self.update_accuracy(predicted_string)
+
+        # Display the result image
+        qt_image = vision_lib.convert_qt_image(img_with_boxes)
+        self.result_image_label.setPixmap(qt_image.scaled(
+            self.result_image_label.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
+        ))
+
+        # Load the image with results into the camera view
+        if program_view and hasattr(program_view, 'cameras') and len(program_view.cameras) > cam_index:
+            program_view.cameras[cam_index].actual_image = img_with_boxes
+            program_view.cameras[cam_index].draw_rois(img_with_boxes, [])
+            program_view.cameras[cam_index].draw_rois_dict(rois_dict)
+            program_view.cameras[cam_index].image_chars = predicted_string
+
+    def show_context_menu(self, pos):
+        item = self.char_list_widget.itemAt(pos)
+        if item:
+            menu = QMenu(self)
+            delete_action = menu.addAction("Delete")
+            correct_action = menu.addAction("Correct")
+            
+            action = menu.exec(self.char_list_widget.mapToGlobal(pos))
+            
+            if action == delete_action:
+                self.delete_prediction(item)
+            elif action == correct_action:
+                self.correct_prediction(item)
+
+    def delete_prediction(self, item):
+        row = self.char_list_widget.row(item)
+        self.char_list_widget.takeItem(row)
+        self.update_full_prediction_label()
+
+    def correct_prediction(self, item):
+        widget = self.char_list_widget.itemWidget(item)
+        if not widget: return
+        
+        text, ok = QInputDialog.getText(self, "Correct Prediction", "Enter correct character:", text=widget.predicted_label)
+        if ok and text:
+            widget.update_label(text)
+            self.update_full_prediction_label()
+
+    def update_accuracy(self, predicted_string):
+        """Calculates and updates the accuracy label based on ground truth."""
         ground_truth = self.ground_truth_edit.text()
         if ground_truth:
             correct_chars = sum(1 for i in range(min(len(ground_truth), len(predicted_string))) if ground_truth[i] == predicted_string[i])
@@ -278,8 +398,46 @@ class InferenceView(QWidget):
         else:
             self.accuracy_label.setText("<b>N/A</b>")
 
-        # Display the result image
-        qt_image = vision_lib.convert_qt_image(img_with_boxes)
-        self.result_image_label.setPixmap(qt_image.scaled(
-            self.result_image_label.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
-        ))
+    def update_full_prediction_label(self):
+        """Reconstructs the full predicted string from the list items."""
+        full_text = ""
+        for i in range(self.char_list_widget.count()):
+            item = self.char_list_widget.item(i)
+            widget = self.char_list_widget.itemWidget(item)
+            if widget:
+                full_text += widget.predicted_label
+        self.predicted_text_label.setText(f"<b>{full_text}</b>")
+        self.update_accuracy(full_text)
+
+    def save_to_dataset(self):
+        """Saves the current inference results (images and labels) to the training dataset."""
+        if not self.parent_wnd or not self.parent_wnd.model_json.model:
+            return
+
+        dataset_path = self.parent_wnd.model_json.model.model_train_dataset
+        if not dataset_path or not os.path.exists(dataset_path):
+            QMessageBox.warning(self, "Erro", "Caminho do dataset de treino não configurado ou inválido.")
+            return
+
+        count = 0
+        for i in range(self.char_list_widget.count()):
+            item = self.char_list_widget.item(i)
+            widget = self.char_list_widget.itemWidget(item)
+            if widget and widget.image_array is not None:
+                label = widget.predicted_label
+                # Create class folder if it doesn't exist
+                class_dir = os.path.join(dataset_path, label)
+                os.makedirs(class_dir, exist_ok=True)
+                
+                # Generate filename
+                timestamp = int(time.time() * 1000)
+                filename = f"{label}_{timestamp}_{i}.png"
+                save_path = os.path.join(class_dir, filename)
+                
+                try:
+                    cv2.imwrite(save_path, widget.image_array)
+                    count += 1
+                except Exception as e:
+                    print(f"Failed to save {save_path}: {e}")
+
+        QMessageBox.information(self, "Sucesso", f"{count} imagens salvas no dataset de treino.")
