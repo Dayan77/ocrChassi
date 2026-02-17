@@ -1,4 +1,5 @@
 import sys
+import os
 import qtawesome as qta
 from PySide6.QtCore import Qt, QSize, Signal, Slot
 from PySide6.QtWidgets import (
@@ -134,6 +135,9 @@ class ModelView(QFrame):
         self.tab_results = QWidget()
         self.tab_results.setFixedHeight(height)
         self.tab_results.setFixedWidth(800)
+        self.tab_easyocr = QWidget()
+        self.tab_easyocr.setFixedHeight(height)
+        self.tab_easyocr.setFixedWidth(800)
         self.tab_inference = QWidget()
         self.tab_inference.setFixedHeight(height)
         self.tab_inference.setFixedWidth(800)
@@ -142,6 +146,7 @@ class ModelView(QFrame):
         self.tabs.addTab(self.tab_edit, "Anotações")
         self.tabs.addTab(self.tab_data, "Treinamento")
         self.tabs.addTab(self.tab_results, "Resultados")
+        self.tabs.addTab(self.tab_easyocr, "EasyOCR Data")
         self.tabs.addTab(self.tab_inference, "Inferência")
 
         # Pass self.parent_wnd (ProgramView) to ModelJsonView so it can access the model_json object
@@ -163,12 +168,20 @@ class ModelView(QFrame):
         self.training_summary_view.startTrainingClicked.connect(self.start_training)
         self.training_summary_view.prepareRecognitionDataClicked.connect(self.on_prepare_recognition_data_clicked)
         self.training_summary_view.prepareYoloDataClicked.connect(self.on_prepare_yolo_data_clicked)
+        self.training_summary_view.prepareEasyOcrDataClicked.connect(self.on_prepare_easyocr_data_clicked)
         self.training_summary_view.startDetectorTrainingClicked.connect(self.start_detector_training)
 
         # --- Integrate ResultsView into the "Resultados" tab ---
         self.results_view = ResultsView()
         results_tab_layout = QVBoxLayout(self.tab_results)
         results_tab_layout.addWidget(self.results_view)
+
+        # --- Integrate DatasetView into the "EasyOCR Data" tab ---
+        self.easyocr_view = DatasetView()
+        easyocr_tab_layout = QVBoxLayout(self.tab_easyocr)
+        easyocr_tab_layout.setContentsMargins(0, 0, 0, 0)
+        easyocr_tab_layout.addWidget(self.easyocr_view)
+        self.easyocr_view.changesApplied.connect(self.on_easyocr_changes_applied)
 
         # --- Integrate InferenceView into the "Inferência" tab ---
         self.inference_view = InferenceView(self.parent_wnd)
@@ -203,21 +216,26 @@ class ModelView(QFrame):
         if self.parent_wnd and self.parent_wnd.model_json.model:
             train_path = self.parent_wnd.model_json.model.model_train_dataset
             self.dataset_view.load_dataset(train_path)
+            
+            # Load EasyOCR dataset
+            easyocr_path = os.path.join(self.parent_wnd.model_json.model.annotation_dataset_path, "easyocr")
+            self.easyocr_view.load_easyocr_dataset(easyocr_path)
 
     def update_training_summary(self, dataset_summary):
         """Slot to update the training summary view."""
         model_data = self.parent_wnd.model_json.model
         self.training_summary_view.update_summary(model_data, dataset_summary)
 
-    def start_training(self):
+    def start_training(self, library="TensorFlow"):
         """Slot to initiate the training process."""
+        print(f"DEBUG: CardModel.start_training called with library='{library}'")
         model_data = self.parent_wnd.model_json.model
         if not model_data:
             # You might want to show a QMessageBox here
             print("No model data loaded.")
             return
         
-        dialog = TrainingProcessDialog(model_data, self)
+        dialog = TrainingProcessDialog(model_data, library, self)
         dialog.trainingCompleted.connect(self.on_training_completed)
         dialog.validationTestCompleted.connect(self.on_validation_completed)
         dialog.exec()
@@ -259,6 +277,22 @@ class ModelView(QFrame):
 
         self.dataset_view.prepare_recognition_dataset(source_path, destination_path, detector_path, model_data, parent_widget=self)
 
+    @Slot()
+    def on_prepare_easyocr_data_clicked(self):
+        """Slot to handle the 'Prepare EasyOCR Data' button click."""
+        model_data = self.parent_wnd.model_json.model
+        if not model_data:
+            QMessageBox.warning(self, "No Model Data", "Please load a model configuration first.")
+            return
+
+        source_path = model_data.annotation_dataset_path
+        # Create a subfolder for EasyOCR data to keep it separate
+        destination_path = os.path.join(model_data.annotation_dataset_path, "easyocr")
+
+        if self.dataset_view.prepare_easyocr_dataset(source_path, destination_path, parent_widget=self):
+            self.easyocr_view.load_easyocr_dataset(destination_path)
+            self.tabs.setCurrentWidget(self.tab_easyocr)
+
     @Slot(object)
     def on_training_completed(self, result):
         """Receives results from the training dialog and updates relevant views."""
@@ -283,6 +317,14 @@ class ModelView(QFrame):
     def on_validation_completed(self, results):
         """Receives validation results and passes them to the results view."""
         self.results_view.update_validation_results(results)
+
+    @Slot()
+    def on_easyocr_changes_applied(self):
+        """Regenerates the labels.csv when changes are made in the EasyOCR view."""
+        if self.parent_wnd and self.parent_wnd.model_json.model:
+            easyocr_path = os.path.join(self.parent_wnd.model_json.model.annotation_dataset_path, "easyocr")
+            if os.path.exists(easyocr_path):
+                self.easyocr_view.regenerate_easyocr_csv(easyocr_path)
 
 class ModelJsonView(QWidget):
     jsonLoaded = Signal(str)

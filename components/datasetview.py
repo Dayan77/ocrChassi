@@ -5,6 +5,7 @@ import random
 import shutil
 import yaml
 import cv2
+import csv
 
 import components.pv_visionlib as vision_lib
 
@@ -14,7 +15,7 @@ except ImportError:
     YOLO = None
 
 from PySide6.QtCore import Qt, QSize, Signal
-from PySide6.QtGui import QIcon, QFont
+from PySide6.QtGui import QIcon, QFont, QPixmap
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QScrollArea,
@@ -65,6 +66,7 @@ class DatasetView(QWidget):
 
     imageClicked = Signal(str)
     datasetLoaded = Signal(dict)
+    changesApplied = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -73,6 +75,7 @@ class DatasetView(QWidget):
         # --- State tracking for file operations ---
         self.pending_deletions = []
         self.pending_moves = [] # List of {'source': path, 'destination': path}
+        self.pending_flips = set() # Set of paths to flip
         self.class_widgets = {} # {class_name: {'header': QLabel, 'layout': QHBoxLayout}}
 
         self.layout = QVBoxLayout(self)
@@ -89,6 +92,11 @@ class DatasetView(QWidget):
         browse_button.setToolTip("Browse for a dataset folder")
         browse_button.clicked.connect(self.browse_folder)
 
+        self.flip_all_button = QPushButton("Flip All Horizontal")
+        self.flip_all_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
+        self.flip_all_button.setToolTip("Flip all images horizontally")
+        self.flip_all_button.clicked.connect(self.flip_all_images)
+
         self.apply_button = QPushButton("Apply Changes")
         self.apply_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
         self.apply_button.setToolTip("Apply pending deletions and moves to the filesystem")
@@ -98,6 +106,7 @@ class DatasetView(QWidget):
         toolbar_layout.addWidget(QLabel("Dataset Folder:"))
         toolbar_layout.addWidget(self.folder_path_edit)
         toolbar_layout.addWidget(browse_button)
+        toolbar_layout.addWidget(self.flip_all_button)
         toolbar_layout.addStretch()
         toolbar_layout.addWidget(self.apply_button)
 
@@ -132,6 +141,7 @@ class DatasetView(QWidget):
             self.load_dataset(folder_path)
             self.pending_deletions.clear()
             self.pending_moves.clear()
+            self.pending_flips.clear()
             self.apply_button.setEnabled(False)
 
     def load_dataset(self, base_path):
@@ -139,6 +149,7 @@ class DatasetView(QWidget):
         Scans the given base_path for subdirectories and image files,
         then populates the tree view.
         """
+        self.folder_path_edit.setText(base_path)
         self._clear_layout(self.scroll_layout)
         self.class_widgets.clear()
         total_image_count = 0
@@ -239,6 +250,11 @@ class DatasetView(QWidget):
         """Creates and shows a context menu for a ClickableLabel."""
         menu = QMenu()
 
+        # --- Flip Action ---
+        flip_action = QAction("Flip Horizontal", self)
+        flip_action.triggered.connect(lambda: self.flip_image(label_widget))
+        menu.addAction(flip_action)
+
         # --- Delete Action ---
         delete_action = QAction("Delete", self)
         delete_action.triggered.connect(lambda: self.delete_image(label_widget))
@@ -257,6 +273,28 @@ class DatasetView(QWidget):
                 move_menu.addAction(move_action)
 
         menu.exec(label_widget.mapToGlobal(pos))
+
+    def flip_image(self, label_widget):
+        """Toggles horizontal flip for a single image."""
+        image_path = label_widget.image_path
+        
+        if image_path in self.pending_flips:
+            self.pending_flips.remove(image_path)
+        else:
+            self.pending_flips.add(image_path)
+            
+        if label_widget.pixmap():
+            img = label_widget.pixmap().toImage()
+            flipped_img = img.mirrored(True, False)
+            label_widget.setPixmap(QPixmap.fromImage(flipped_img))
+            
+        self.apply_button.setEnabled(True)
+
+    def flip_all_images(self):
+        """Flips all loaded images horizontally."""
+        labels = self.findChildren(ClickableLabel)
+        for label in labels:
+            self.flip_image(label)
 
     def delete_image(self, label_widget):
         """Handles the UI logic for deleting an image."""
@@ -309,6 +347,7 @@ class DatasetView(QWidget):
         msg_box.setText("This will permanently modify your dataset on disk.")
         details = f"Pending Deletions: {len(self.pending_deletions)}\n"
         details += f"Pending Moves: {len(self.pending_moves)}"
+        details += f"\nPending Flips: {len(self.pending_flips)}"
         msg_box.setInformativeText(f"Are you sure you want to apply these changes?\n\n{details}")
         msg_box.setStandardButtons(QMessageBox.StandardButton.Apply | QMessageBox.StandardButton.Cancel)
         msg_box.setDefaultButton(QMessageBox.StandardButton.Cancel)
@@ -316,16 +355,32 @@ class DatasetView(QWidget):
         ret = msg_box.exec()
 
         if ret == QMessageBox.StandardButton.Apply:
+            # Perform moves first so paths are correct for flips if moved
+            for move in self.pending_moves:
+                if os.path.exists(move['source']):
+                    os.rename(move['source'], move['destination'])
+            
+            # Perform flips
+            for file_path in self.pending_flips:
+                if os.path.exists(file_path):
+                    try:
+                        img = cv2.imread(file_path)
+                        if img is not None:
+                            img = cv2.flip(img, 1)
+                            cv2.imwrite(file_path, img)
+                    except Exception as e:
+                        print(f"Error flipping image {file_path}: {e}")
+
             # Perform deletions
             for file_path in self.pending_deletions:
                 if os.path.exists(file_path):
                     os.remove(file_path)
-            # Perform moves
-            for move in self.pending_moves:
-                os.rename(move['source'], move['destination'])
             
-            # Clear pending changes and reload
-            self.browse_folder() # This will clear pending lists and reload the view
+            self.pending_deletions.clear()
+            self.pending_moves.clear()
+            self.pending_flips.clear()
+            self.apply_button.setEnabled(False)
+            self.changesApplied.emit()
 
     def prepare_yolo_dataset(self, source_path, destination_path, parent_widget=None):
         """
@@ -477,8 +532,8 @@ class DatasetView(QWidget):
             if reply == QMessageBox.StandardButton.Yes:
                 shutil.rmtree(destination_path)
             else:
-                QMessageBox.information(parent_widget, "Cancelled", "Data preparation cancelled.")
-                return False
+                QMessageBox.information(parent_widget, "Adicionado", "Imagens preparadas serão adiconadas.")
+                # return False
 
         os.makedirs(destination_path, exist_ok=True)
 
@@ -552,6 +607,208 @@ class DatasetView(QWidget):
 
         QMessageBox.information(parent_widget, "Success", f"Recognition dataset prepared successfully.\n{count} character images were created.")
         return True
+
+    def prepare_easyocr_dataset(self, source_path, destination_path, parent_widget=None):
+        """
+        Prepares a dataset for EasyOCR training by cropping characters from annotated images
+        and creating a labels.csv file.
+        """
+        if not source_path or not os.path.isdir(source_path):
+            QMessageBox.warning(parent_widget, "No Source Dataset", "Please set a valid 'Annotation Dataset' path.")
+            return False
+
+        if not os.path.exists(destination_path):
+            os.makedirs(destination_path)
+
+        # CSV file to store labels: filename,words
+        csv_file_path = os.path.join(destination_path, "labels.csv")
+        
+        count = 0
+        try:
+            with open(csv_file_path, mode='w', newline='', encoding='utf-8') as csv_file:
+                writer = csv.writer(csv_file)
+                writer.writerow(['filename', 'words'])
+
+                for filename in os.listdir(source_path):
+                    if not filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+                        continue
+
+                    img_path = os.path.join(source_path, filename)
+                    json_path = img_path + ".json"
+                    
+                    if not os.path.exists(json_path):
+                        continue
+
+                    with open(json_path, 'r') as f:
+                        annotations = json.load(f)
+
+                    img = cv2.imread(img_path)
+                    if img is None: continue
+
+                    for roi_id, data in annotations.items():
+                        char = data['char']
+                        if char == '?': continue
+
+                        box = data['box']
+                        x, y, w, h = int(box['x']), int(box['y']), int(box['w']), int(box['h'])
+                        
+                        # Crop character
+                        char_img = img[y:y+h, x:x+w]
+                        
+                        # Generate unique filename (flat structure)
+                        # Encode char in filename for safety: filename_roi_char.png
+                        safe_char = "".join([c for c in char if c.isalnum() or c in ('_','-')])
+                        char_filename = f"{os.path.splitext(filename)[0]}_{roi_id}_{safe_char}.png"
+                        save_path = os.path.join(destination_path, char_filename)
+                        
+                        cv2.imwrite(save_path, char_img)
+                        # Write filename to CSV
+                        writer.writerow([char_filename, char])
+                        count += 1
+
+            QMessageBox.information(parent_widget, "Success", f"EasyOCR dataset prepared at:\n{destination_path}\n\n{count} samples created.")
+            return True
+        except Exception as e:
+            QMessageBox.critical(parent_widget, "Error", f"Failed to prepare EasyOCR dataset: {e}")
+            return False
+
+    def load_easyocr_dataset(self, base_path):
+        """
+        Loads an EasyOCR dataset by reading the labels.csv file.
+        Groups images by the label defined in the CSV.
+        """
+        self.folder_path_edit.setText(base_path)
+        self._clear_layout(self.scroll_layout)
+        self.class_widgets.clear()
+        total_image_count = 0
+
+        csv_path = os.path.join(base_path, "labels.csv")
+        if not os.path.exists(csv_path):
+            return
+
+        # Read CSV and group by label
+        data_by_class = {}
+        try:
+            with open(csv_path, 'r', encoding='utf-8') as f:
+                reader = csv.reader(f)
+                next(reader, None) # Skip header
+                for row in reader:
+                    if len(row) >= 2:
+                        filename, label = row[0], row[1]
+                        if label not in data_by_class:
+                            data_by_class[label] = []
+                        data_by_class[label].append(os.path.join(base_path, filename))
+        except Exception as e:
+            print(f"Error reading CSV: {e}")
+            return
+
+        # Populate UI
+        class_names = sorted(data_by_class.keys())
+        for class_name in class_names:
+            image_paths = data_by_class[class_name]
+            image_count = len(image_paths)
+            image_widgets = []
+            
+            for image_path in image_paths:
+                if not os.path.exists(image_path): continue
+                
+                filename = os.path.basename(image_path)
+                
+                image_widget = QWidget()
+                image_widget.setFixedWidth(120)
+                image_layout = QVBoxLayout(image_widget)
+                image_layout.setContentsMargins(2, 2, 2, 2)
+                image_layout.setSpacing(2)
+                
+                image_label = ClickableLabel(image_path, class_names)
+                image_label.setPixmap(QIcon(image_path).pixmap(QSize(100, 100)))
+                image_label.setScaledContents(True)
+                image_label.setFixedSize(100, 100)
+                image_label.clicked.connect(self.imageClicked.emit)
+                image_label.customContextMenuRequested.connect(
+                    lambda pos, label=image_label: self.show_image_context_menu(pos, label)
+                )
+
+                name_label = QLabel(filename)
+                name_label.setFont(QFont("Arial", 7))
+                name_label.setWordWrap(True)
+                name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                
+                image_layout.addWidget(image_label)
+                image_layout.addWidget(name_label)
+                
+                image_widgets.append(image_widget)
+
+            if image_widgets:
+                header_label = QLabel()
+                self.scroll_layout.addWidget(header_label)
+
+                image_scroll_area = QScrollArea()
+                image_scroll_area.setWidgetResizable(True)
+                image_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+                image_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+                image_scroll_area.setFixedHeight(150)
+
+                image_container = QWidget()
+                image_layout_h = QHBoxLayout(image_container)
+                image_layout_h.setSpacing(5)
+                image_layout_h.setAlignment(Qt.AlignmentFlag.AlignLeft)
+                
+                for widget in image_widgets:
+                    image_layout_h.addWidget(widget)
+
+                image_scroll_area.setWidget(image_container)
+                self.scroll_layout.addWidget(image_scroll_area)
+
+                self.class_widgets[class_name] = {
+                    'header': header_label,
+                    'layout': image_layout_h,
+                    'count': image_count
+                }
+                self._update_header_label(class_name)
+                total_image_count += image_count
+
+        self.datasetLoaded.emit({'classes': len(self.class_widgets), 'images': total_image_count})
+
+    def regenerate_easyocr_csv(self, base_path):
+        """
+        Regenerates the labels.csv file based on the current folder structure and flat files.
+        Handles both flat files (parsing filename for label) and subfolders (folder name is label).
+        """
+        csv_file_path = os.path.join(base_path, "labels.csv")
+        try:
+            with open(csv_file_path, mode='w', newline='', encoding='utf-8') as csv_file:
+                writer = csv.writer(csv_file)
+                writer.writerow(['filename', 'words'])
+
+                # 1. Scan subdirectories (created by moving images in UI)
+                for item in os.listdir(base_path):
+                    item_path = os.path.join(base_path, item)
+                    if os.path.isdir(item_path):
+                        class_name = item
+                        for filename in os.listdir(item_path):
+                            if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+                                writer.writerow([f"{class_name}/{filename}", class_name])
+                    
+                    # 2. Scan flat files (original structure)
+                    elif item.lower().endswith(('.png', '.jpg', '.jpeg')):
+                        # Try to extract label from filename: name_roi_CHAR.png
+                        # Fallback: if we can't parse, we might lose the label or need to read old CSV.
+                        # For now, assume filename format is preserved.
+                        try:
+                            # Remove extension
+                            name_no_ext = os.path.splitext(item)[0]
+                            # Split by underscore, take last part
+                            parts = name_no_ext.split('_')
+                            if len(parts) >= 3:
+                                label = parts[-1]
+                                writer.writerow([item, label])
+                        except:
+                            pass
+
+            print(f"Regenerated labels.csv at {csv_file_path}")
+        except Exception as e:
+            print(f"Failed to regenerate CSV: {e}")
 
 # if __name__ == '__main__':
 #     # Example of how to use the widget

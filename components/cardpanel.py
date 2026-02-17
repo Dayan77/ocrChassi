@@ -140,6 +140,7 @@ class ImageSegmentationView(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
 
+        self.cam_index = 0
         
 
         self.parent_wnd = parent
@@ -204,23 +205,6 @@ class ImageSegmentationView(QFrame):
             }
         """)
         test_button.clicked.connect(self.test_pytesseract)
-
-        generate_data_btn = QPushButton("Gerar Dados de Treino")
-        generate_data_btn.setMaximumHeight(35)
-        generate_data_btn.setMinimumWidth(120)
-        generate_data_btn.setMaximumWidth(120)
-        generate_data_icon = QIcon(":icons/icons-cl/zap.svg") 
-        generate_data_btn.setIcon(generate_data_icon)
-        generate_data_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #0e6e4b; /* A distinct color */
-                color: white;                       
-                border: 2px solid white;
-                border-radius: 5px;
-                padding: 5px;
-            }
-        """)
-        generate_data_btn.clicked.connect(self.on_generate_training_data_clicked)
 
         buttons.addWidget(test_button)
         image_buttons.addLayout(buttons)
@@ -410,6 +394,8 @@ class ImageSegmentationView(QFrame):
         
 
         #image_threshold.valueChanged.connect
+        
+        self.setup_results_tab()
 
     def update_diameter(self, value):
         self.diameter = value
@@ -442,14 +428,15 @@ class ImageSegmentationView(QFrame):
         else:
             cam_index = 0
 
-        if not self.parent_wnd.cameras[cam_index].image_path:
+        image = self.parent_wnd.cameras[cam_index].actual_image
+        if image is None:
             QMessageBox.warning(self, "Sem Imagem", "Por favor, carregue uma imagem na câmera selecionada primeiro.")
             return
 
         visionLib = pv_visionlib.pvVisionLib()
         params = self.get_segmentation_params()
         
-        img, binary_img, characters, samples = visionLib.collect_and_preprocess_samples(self.parent_wnd.cameras[cam_index].image_path, params['threshold'], params['diameter'], params['sigma'], params['space'])
+        img, binary_img, characters, samples = visionLib.collect_and_preprocess_samples(image, params['threshold'], params['diameter'], params['sigma'], params['space'])
         self.refresh_image(binary_img)
         self.populate_results(characters, samples, cam_index)
     
@@ -460,22 +447,67 @@ class ImageSegmentationView(QFrame):
         else:
             cam_index = 0
 
+        image = self.parent_wnd.cameras[cam_index].actual_image
+        if image is None:
+            QMessageBox.warning(self, "Sem Imagem", "Por favor, carregue uma imagem na câmera selecionada primeiro.")
+            return
+
         visionLib = pv_visionlib.pvVisionLib()
         
         params = self.get_segmentation_params()
-        img, bin, boxes, samples, chars = visionLib.collect_samples(self.parent_wnd.cameras[cam_index].image_path, '../models/', 'ocr_samples', params['threshold'], params['diameter'], params['sigma'], params['space'], self.min_w, self.max_w, self.min_h, self.max_h, self.min_a, self.max_a)
+        img, bin, boxes, samples, chars = visionLib.collect_samples(image, '../models/', 'ocr_samples', params['threshold'], params['diameter'], params['sigma'], params['space'], self.min_w, self.max_w, self.min_h, self.max_h, self.min_a, self.max_a)
         self.refresh_image(bin)
 
-        cam_index = 1 if self.camB_radio.isChecked() == True else 0
         imv = self.parent_wnd.cameras[cam_index].draw_rois(img, chars)
 
         self.populate_results(chars, samples, cam_index)
         pass
         
-    
-    def populate_results(self, chars, samples, cam_index):
+    def setup_results_tab(self):
         self.card_results = QVBoxLayout(self.tab_segmentation_results)
 
+        # --- Controls moved to Results Tab ---
+        controls_layout = QHBoxLayout()
+        
+        self.flip_btn = QPushButton("Inverter Horizontalmente")
+        self.flip_btn.setMaximumHeight(35)
+        self.flip_btn.setMinimumWidth(150)
+        flip_icon = QIcon(":icons/icons/refresh-cw.svg")
+        self.flip_btn.setIcon(flip_icon)
+        self.flip_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #0e6e4b; /* A distinct color */
+                color: white;                       
+                border: 2px solid white;
+                border-radius: 5px;
+                padding: 5px;
+            }
+        """)
+        self.flip_btn.clicked.connect(self.flip_image_horizontally)
+        
+        generate_data_btn = QPushButton("Gerar Dados de Treino")
+        generate_data_btn.setMaximumHeight(35)
+        generate_data_btn.setMinimumWidth(120)
+        generate_data_btn.setMaximumWidth(120)
+        generate_data_icon = QIcon(":icons/icons-cl/zap.svg") 
+        generate_data_btn.setIcon(generate_data_icon)
+        generate_data_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #0e6e4b; /* A distinct color */
+                color: white;                       
+                border: 2px solid white;
+                border-radius: 5px;
+                padding: 5px;
+            }
+        """)
+        generate_data_btn.clicked.connect(self.on_generate_training_data_clicked)
+
+        controls_layout.addWidget(self.flip_btn)
+        controls_layout.addWidget(generate_data_btn)
+        controls_layout.addStretch()
+        
+        self.card_results.addLayout(controls_layout)
+        
         #Characters
         self.alphabet_chars = QLineEdit()
         self.alphabet_chars.setMaxLength(100)
@@ -609,11 +641,9 @@ class ImageSegmentationView(QFrame):
         results_actions_row.addWidget(clear_samples_btn)
         results_actions_row.addWidget(detect_chars_btn)
 
-        self.cam_index = cam_index
-
-        add_roi_btn.clicked.connect(self.parent_wnd.cameras[cam_index].create_new_roi)
-        delete_samples_btn.clicked.connect(self.parent_wnd.cameras[cam_index].delete_selected_roi)
-        clear_samples_btn.clicked.connect(self.parent_wnd.cameras[cam_index].delete_all_rois)
+        add_roi_btn.clicked.connect(self.on_add_roi)
+        delete_samples_btn.clicked.connect(self.on_delete_roi)
+        clear_samples_btn.clicked.connect(self.on_clear_rois)
         refresh_samples_btn.clicked.connect(self.refresh_rois_listview)
         save_samples_btn.clicked.connect(self.export_rois_list)
 
@@ -621,11 +651,6 @@ class ImageSegmentationView(QFrame):
         self.list_segmentation_results = CustomListView("Segmentação de caracteres")
         self.list_segmentation_results.setFixedHeight(630)
         self.list_segmentation_results.setFixedWidth(350)
-        
-
-        for index, item in samples.items():
-            img_cv = self.updateCV_Image(item["image"])
-            self.list_segmentation_results.add_list_item(img_cv, item["char"])
 
         #Export images path
         self.export_images_path = QLineEdit()
@@ -674,14 +699,37 @@ class ImageSegmentationView(QFrame):
 
         self.card_results.addStretch()
 
-    
+    def populate_results(self, chars, samples, cam_index):
+        self.cam_index = cam_index
+        self.list_segmentation_results.list_widget.clear()
+        
+        for index, item in samples.items():
+            img_cv = self.updateCV_Image(item["image"])
+            self.list_segmentation_results.add_list_item(img_cv, item["char"])
+            
+        self.tabs.setCurrentWidget(self.tab_segmentation_results)
+
+    def flip_image_horizontally(self):
+        cam_index = 1 if self.camB_radio.isChecked() else 0
+        camera = self.parent_wnd.cameras[cam_index]
+        
+        if camera.actual_image is not None:
+            flipped_image = cv2.flip(camera.actual_image, 1)
+            camera.setImage(flipped_image)
+
+    def on_add_roi(self):
+        self.parent_wnd.cameras[self.cam_index].create_new_roi()
+
+    def on_delete_roi(self):
+        self.parent_wnd.cameras[self.cam_index].delete_selected_roi()
+
+    def on_clear_rois(self):
+        self.parent_wnd.cameras[self.cam_index].delete_all_rois()
 
     def refresh_rois_listview(self):
         self.list_segmentation_results.list_widget.clear()
         samples = self.parent_wnd.cameras[self.cam_index].refresh_rois(self.alphabet_chars.text())
 
-        # for _roi in self.parent_wnd.cameras[self.cam_index].rois:
-        #     self.list_segmentation_results.add_list_item(_roi['image'], _roi['text'])
         for index, item in samples.items():
             img_cv = self.updateCV_Image(item["image"])
             self.list_segmentation_results.add_list_item(img_cv, item["char"])

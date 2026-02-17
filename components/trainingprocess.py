@@ -1,3 +1,4 @@
+import csv
 import os
 import sys
 import random
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
 )
 
+from components.models import SimpleCNN, EasyOCRCharNet, CharDataset, EasyOCRDataset
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2" # Suppress TensorFlow INFO messages
 
@@ -33,6 +35,14 @@ try:
 except ImportError:
     print("TensorFlow/Keras not found. Training will not be available.")
     tf = None
+
+try:
+    import torch
+    import torch.nn as nn
+    import torch.optim as optim
+    from torch.utils.data import Dataset, DataLoader
+except ImportError:
+    torch = None
 
 def _calculate_iou(boxA, boxB):
     # From annotation [x, y, w, h] to [x1, y1, x2, y2]
@@ -236,6 +246,184 @@ def train_model_cnn(model_data, progress_callback, log_callback):
     
     return final_stats, class_names
 
+def train_easyocr_custom(model_data, progress_callback, log_callback):
+    """
+    Trains a custom model architecture suitable for EasyOCR customization.
+    """
+    if not torch:
+        log_callback("PyTorch is not installed.")
+        return None, None
+
+    epochs = int(model_data.train_epochs)
+    easyocr_data_path = os.path.join(model_data.annotation_dataset_path, "easyocr")
+    
+    log_callback(f"--- Starting Custom EasyOCR Training: {model_data.model_name} ---")
+    log_callback(f"Dataset Path: {easyocr_data_path}")
+
+    if not os.path.exists(easyocr_data_path):
+        log_callback("EasyOCR dataset folder not found. Please prepare EasyOCR data first.")
+        return None, None
+
+    # 1. Prepare Data
+    full_dataset = EasyOCRDataset(easyocr_data_path, int(model_data.image_width), int(model_data.image_height))
+    
+    if len(full_dataset) == 0:
+        log_callback("No data found in EasyOCR dataset (labels.csv empty or missing?).")
+        return None, None
+
+    train_size = int(0.8 * len(full_dataset))
+    val_size = len(full_dataset) - train_size
+    train_dataset, val_dataset = torch.utils.data.random_split(full_dataset, [train_size, val_size])
+
+    class_names = full_dataset.class_names
+    num_classes = len(class_names)
+    log_callback(f"Classes ({num_classes}): {', '.join(class_names)}")
+
+    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
+    
+    # 2. Setup Model
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = EasyOCRCharNet(num_classes, int(model_data.image_height), int(model_data.image_width)).to(device)
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    
+    # 3. Training Loop
+    final_stats = {}
+    for epoch in range(epochs):
+        model.train()
+        running_loss = 0.0
+        correct = 0
+        total = 0
+        
+        for inputs, labels in train_loader:
+            inputs, labels = inputs.to(device), labels.to(device)
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            
+            running_loss += loss.item()
+            _, predicted = torch.max(outputs.data, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+            
+        epoch_acc = correct / total if total > 0 else 0.0
+        epoch_loss = running_loss / len(train_loader) if len(train_loader) > 0 else 0.0
+
+        # Validation Loop
+        model.eval()
+        val_loss = 0.0
+        val_correct = 0
+        val_total = 0
+        with torch.no_grad():
+            for inputs, labels in val_loader:
+                inputs, labels = inputs.to(device), labels.to(device)
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
+                val_loss += loss.item()
+                _, predicted = torch.max(outputs.data, 1)
+                val_total += labels.size(0)
+                val_correct += (predicted == labels).sum().item()
+        
+        val_acc = val_correct / val_total if val_total > 0 else 0.0
+        val_epoch_loss = val_loss / len(val_loader) if len(val_loader) > 0 else 0.0
+
+        log_callback(f"Epoch {epoch+1}/{epochs} - Loss: {epoch_loss:.4f} - Acc: {epoch_acc:.4f} - Val Loss: {val_epoch_loss:.4f} - Val Acc: {val_acc:.4f}")
+        progress_callback.emit(int(((epoch + 1) / epochs) * 100))
+
+    # 4. Save Model
+    base_name, _ = os.path.splitext(model_data.encoder_filename)
+    save_path = base_name + "_easyocr.pth"
+    torch.save(model.state_dict(), save_path)
+    
+    final_stats = {
+        "final_accuracy": epoch_acc, 
+        "final_loss": epoch_loss,
+        "final_val_accuracy": val_acc,
+        "final_val_loss": val_epoch_loss
+    }
+    log_callback(f"\n--- Training Finished. Custom EasyOCR Model saved to: {save_path} ---")
+    
+    return final_stats, class_names
+
+def train_model_pytorch(model_data, progress_callback, log_callback):
+    """
+    Trains a PyTorch CNN model based on the provided configuration.
+    """
+    if not torch:
+        log_callback("PyTorch is not installed.")
+        return None, None
+
+    if not YOLO:
+        log_callback("Error: 'ultralytics' package not found for data generation.")
+        return None, None
+
+    epochs = int(model_data.train_epochs)
+    annotation_dir = model_data.annotation_dataset_path
+    
+    log_callback(f"--- Starting PyTorch Training: {model_data.model_name} ---")
+    
+    # 1. Prepare Data
+    detector_model = YOLO(model_data.detector_model_path)
+    image_files = [os.path.join(annotation_dir, f) for f in os.listdir(annotation_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+    random.shuffle(image_files)
+    split_index = int(len(image_files) * 0.8)
+    
+    # Collect data from generator into lists
+    train_data = list(cnn_data_generator(image_files[:split_index], model_data, detector_model))
+    val_data = list(cnn_data_generator(image_files[split_index:], model_data, detector_model))
+    
+    if not train_data:
+        log_callback("No training data generated. Check annotations and detector.")
+        return None, None
+
+    class_names = sorted(model_data.model_classes)
+    num_classes = len(class_names)
+    
+    train_loader = DataLoader(CharDataset(train_data), batch_size=32, shuffle=True)
+    
+    # 2. Setup Model
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = SimpleCNN(num_classes, int(model_data.image_height), int(model_data.image_width)).to(device)
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    
+    # 3. Training Loop
+    final_stats = {}
+    for epoch in range(epochs):
+        model.train()
+        running_loss = 0.0
+        correct = 0
+        total = 0
+        
+        for inputs, labels in train_loader:
+            inputs, labels = inputs.to(device), labels.to(device)
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            
+            running_loss += loss.item()
+            _, predicted = torch.max(outputs.data, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+            
+        epoch_acc = correct / total
+        log_callback(f"Epoch {epoch+1}/{epochs} - Loss: {running_loss/len(train_loader):.4f} - Acc: {epoch_acc:.4f}")
+        progress_callback.emit(int(((epoch + 1) / epochs) * 100))
+
+    # 4. Save Model
+    # Use .pth extension for PyTorch models
+    base_name, _ = os.path.splitext(model_data.encoder_filename)
+    save_path = base_name + ".pth"
+    torch.save(model.state_dict(), save_path)
+    final_stats = {"final_accuracy": epoch_acc, "final_loss": running_loss/len(train_loader)}
+    log_callback(f"\n--- Training Finished. Model saved to: {save_path} ---")
+    
+    return final_stats, class_names
 
 class TrainingWorker(QObject):
     """
@@ -245,15 +433,23 @@ class TrainingWorker(QObject):
     log = Signal(str)      # Emits log messages
     finished = Signal(object)  # Emits a tuple (stats, class_names) when done
 
-    def __init__(self, model_data):
+    def __init__(self, model_data, library="TensorFlow"):
         super().__init__()
         self.model_data = model_data
+        self.library = library
+        print(f"DEBUG: TrainingWorker initialized with library='{self.library}'")
 
     @Slot()
     def run(self):
         """Starts the training process."""
+        print(f"DEBUG: TrainingWorker.run executing for library='{self.library}'")
         try:
-            stats, class_names = train_model_cnn(self.model_data, self.progress, self.log)
+            if self.library == "EasyOCR":
+                stats, class_names = train_easyocr_custom(self.model_data, self.progress, self.log.emit)
+            elif self.library == "PyTorch":
+                stats, class_names = train_model_pytorch(self.model_data, self.progress, self.log.emit)
+            else:
+                stats, class_names = train_model_cnn(self.model_data, self.progress, self.log.emit)
             self.finished.emit((stats, class_names))
         except Exception as e:
             self.log.emit(f"\n--- An error occurred ---\n{e}")
@@ -267,9 +463,11 @@ class TrainingProcessDialog(QDialog):
     trainingCompleted = Signal(object) # Signal to emit a tuple (stats, class_names) to parent
     validationTestCompleted = Signal(list) # Signal to emit validation results to parent
 
-    def __init__(self, model_data, parent=None):
+    def __init__(self, model_data, library="TensorFlow", parent=None):
         super().__init__(parent)
         self.model_data = model_data
+        self.library = library
+        print(f"DEBUG: TrainingProcessDialog initialized with library='{self.library}'")
         self.train_files = [] # To store file lists for validation
         self.val_files = []
         self.setWindowTitle("Training Model")
@@ -304,7 +502,7 @@ class TrainingProcessDialog(QDialog):
     def setup_training_thread(self):
         """Sets up and starts the training worker thread."""
         self.thread = QThread()
-        self.worker = TrainingWorker(self.model_data)
+        self.worker = TrainingWorker(self.model_data, self.library)
         self.worker.moveToThread(self.thread)
 
         # --- Connections ---
@@ -360,7 +558,7 @@ class TrainingProcessDialog(QDialog):
 
         try:
             # Load the trained model
-            model = keras.models.load_model(self.model_data.get_model_save_path())
+            model = keras.models.load_model(self.model_data.encoder_filename)
             # Get the class names directly from the model data that was updated after training
             class_names = self.model_data.model_classes
 
@@ -416,13 +614,13 @@ class TrainingProcessDialog(QDialog):
             self.thread.quit() # Ask the event loop to stop
             self.thread.wait(500) # Wait a bit for it to finish
         event.accept()
-        num_classes = len(class_names)
-        log_callback(f"Found {num_classes} classes: {', '.join(class_names)}\n")
+        num_classes = len(self.class_names)
+        self.log_callback(f"Found {num_classes} classes: {', '.join(self.class_names)}\n")
     
 
         # --- 3. Build CNN Model ---
         model = keras.Sequential([
-            layers.Rescaling(1./255, input_shape=(img_height, img_width, 1)),
+            layers.Rescaling(1./255, input_shape=(self.mg_height, self.img_width, 1)),
             layers.Conv2D(16, 3, padding='same', activation='relu'),
             layers.MaxPooling2D(),
             layers.Conv2D(32, 3, padding='same', activation='relu'),
@@ -438,22 +636,22 @@ class TrainingProcessDialog(QDialog):
                     loss=tf.keras.losses.SparseCategoricalCrossentropy(),
                     metrics=['accuracy'])
         
-        model.summary(print_fn=lambda x: log_callback(x))
+        model.summary(print_fn=lambda x: self.log_callback(x))
 
         # --- 4. Train the Model ---
-        log_callback("\n--- Starting Model Fitting ---")
-        ui_callback = KerasProgressCallback(progress_callback, log_callback)
+        self.log_callback("\n--- Starting Model Fitting ---")
+        ui_callback = KerasProgressCallback(self.progress_callback, self.log_callback)
         history = model.fit(
-            train_ds,
-            validation_data=val_ds,
-            epochs=epochs,
+            self.train_ds,
+            validation_data=self.val_ds,
+            epochs=self.epochs,
             callbacks=[ui_callback],
             verbose=0 # We use our custom callback for logging
         )
 
         # --- 5. Save the Model and Return Stats ---
-        model.save(model_data.get_model_save_path())
-        log_callback(f"\n--- Training Finished. Model saved to: {model_data.get_model_save_path()} ---")
+        model.save(self.model_data.get_model_save_path())
+        self.log_callback(f"\n--- Training Finished. Model saved to: {self.model_data.get_model_save_path()} ---")
 
         final_stats = {
             "final_accuracy": history.history['accuracy'][-1],
@@ -464,7 +662,7 @@ class TrainingProcessDialog(QDialog):
         
         # Return both stats and the discovered class names
         # The class names are sorted alphabetically by image_dataset_from_directory
-        return final_stats, class_names
+        return final_stats, self.class_names
 
 
 class TrainingWorker(QObject):
@@ -475,15 +673,21 @@ class TrainingWorker(QObject):
     log = Signal(str)      # Emits log messages
     finished = Signal(object)  # Emits a tuple (stats, class_names) when done
 
-    def __init__(self, model_data):
+    def __init__(self, model_data, library="TensorFlow"):
         super().__init__()
         self.model_data = model_data
+        self.library = library
 
     @Slot()
     def run(self):
         """Starts the training process."""
         try:
-            stats, class_names = train_model_cnn(self.model_data, self.progress, self.log.emit)
+            if self.library == "EasyOCR":
+                stats, class_names = train_easyocr_custom(self.model_data, self.progress, self.log.emit)
+            elif self.library == "PyTorch":
+                stats, class_names = train_model_pytorch(self.model_data, self.progress, self.log.emit)
+            else:
+                stats, class_names = train_model_cnn(self.model_data, self.progress, self.log.emit)
             self.finished.emit((stats, class_names))
         except Exception as e:
             self.log.emit(f"\n--- An error occurred ---\n{e}")
@@ -497,9 +701,10 @@ class TrainingProcessDialog(QDialog):
     trainingCompleted = Signal(object) # Signal to emit a tuple (stats, class_names) to parent
     validationTestCompleted = Signal(list) # Signal to emit validation results to parent
 
-    def __init__(self, model_data, parent=None):
+    def __init__(self, model_data, library="TensorFlow", parent=None):
         super().__init__(parent)
         self.model_data = model_data
+        self.library = library
         self.train_files = [] # To store file lists for validation
         self.val_files = []
         self.setWindowTitle("Training Model")
@@ -534,7 +739,7 @@ class TrainingProcessDialog(QDialog):
     def setup_training_thread(self):
         """Sets up and starts the training worker thread."""
         self.thread = QThread()
-        self.worker = TrainingWorker(self.model_data)
+        self.worker = TrainingWorker(self.model_data, self.library)
         self.worker.moveToThread(self.thread)
 
         # --- Connections ---
@@ -583,6 +788,74 @@ class TrainingProcessDialog(QDialog):
         """Loads the trained model and runs predictions on a subset of validation data."""
         self.log_area.append("\n--- Running Validation Test ---")
         self.run_test_button.setEnabled(False)
+
+        if self.library in ["PyTorch", "EasyOCR"]:
+            if not torch:
+                self.log_area.append("PyTorch is not installed. Cannot run validation.")
+                self.run_test_button.setEnabled(True)
+                return
+
+            try:
+                device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+                class_names = self.model_data.model_classes
+                num_classes = len(class_names)
+                img_h = int(self.model_data.image_height)
+                img_w = int(self.model_data.image_width)
+
+                if self.library == "EasyOCR":
+                    model = EasyOCRCharNet(num_classes, img_h, img_w).to(device)
+                    base_name, _ = os.path.splitext(self.model_data.encoder_filename)
+                    model_path = base_name + "_easyocr.pth"
+                else:
+                    model = SimpleCNN(num_classes, img_h, img_w).to(device)
+                    base_name, _ = os.path.splitext(self.model_data.encoder_filename)
+                    model_path = base_name + ".pth"
+
+                if not os.path.exists(model_path):
+                    self.log_area.append(f"Model file not found: {model_path}")
+                    self.run_test_button.setEnabled(True)
+                    return
+
+                model.load_state_dict(torch.load(model_path, map_location=device))
+                model.eval()
+
+                results = []
+                
+                if self.library == "EasyOCR":
+                    easyocr_data_path = os.path.join(self.model_data.annotation_dataset_path, "easyocr")
+                    if os.path.exists(easyocr_data_path):
+                        val_dataset = EasyOCRDataset(easyocr_data_path, img_w, img_h)
+                        # Take a random sample
+                        indices = list(range(len(val_dataset)))
+                        random.shuffle(indices)
+                        indices = indices[:20]
+                        
+                        for idx in indices:
+                            img_tensor, label_idx = val_dataset[idx]
+                            img_input = img_tensor.unsqueeze(0).to(device)
+                            
+                            with torch.no_grad():
+                                outputs = model(img_input)
+                                probs = torch.softmax(outputs, dim=1)
+                                conf, pred_idx = torch.max(probs, 1)
+                            
+                            img_np = (img_tensor.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+                            
+                            results.append({
+                                'image_array': img_np,
+                                'actual_label': class_names[label_idx],
+                                'predicted_label': class_names[pred_idx.item()],
+                                'confidence': conf.item() * 100
+                            })
+                
+                self.log_area.append(f"Generated {len(results)} validation samples.")
+                self.validationTestCompleted.emit(results)
+
+            except Exception as e:
+                self.log_area.append(f"Error during validation: {e}")
+            
+            self.run_test_button.setEnabled(True)
+            return
 
         if not tf:
             self.log_area.append("TensorFlow is not installed. Cannot run validation.")

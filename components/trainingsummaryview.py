@@ -11,7 +11,8 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QLineEdit,
     QFrame,
-    QStyle)
+    QStyle,
+    QComboBox)
 from PySide6.QtGui import QFont, QIcon
 
 
@@ -21,10 +22,11 @@ class TrainingSummaryView(QWidget):
     and dataset, with a button to start the training process.
     """
 
-    startTrainingClicked = Signal()
+    startTrainingClicked = Signal(str)
     startDetectorTrainingClicked = Signal()
     prepareYoloDataClicked = Signal()
     prepareRecognitionDataClicked = Signal()
+    prepareEasyOcrDataClicked = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -43,10 +45,14 @@ class TrainingSummaryView(QWidget):
         self.encoder_path_edit.setFixedWidth(400)
         self.encoder_path_edit.setReadOnly(True)
 
+        self.library_select = QComboBox()
+        self.library_select.addItems(["TensorFlow", "PyTorch", "EasyOCR"])
+
         config_layout.addRow("Nome do Modelo:", self.model_name_label)
         config_layout.addRow("Épocas de Treinamento:", self.epochs_label)
         config_layout.addRow("Dimensões da Imagem:", self.image_size_label)
         config_layout.addRow("Arquivo do Codificador:", self.encoder_path_edit)
+        config_layout.addRow("Biblioteca de Treino:", self.library_select)
 
         # --- Dataset Summary Group ---
         dataset_group = QGroupBox("Sumário do Dataset")
@@ -81,7 +87,7 @@ class TrainingSummaryView(QWidget):
         font.setPointSize(12)
         font.setBold(True)
         self.start_button.setFont(font)        
-        self.start_button.clicked.connect(self.startTrainingClicked)
+        self.start_button.clicked.connect(self.on_start_clicked)
         self.start_button.setEnabled(False)
 
         self.train_detector_button = QPushButton("Train Detector")
@@ -107,11 +113,20 @@ class TrainingSummaryView(QWidget):
         self.prepare_rec_button.setFont(font)
         self.prepare_rec_button.clicked.connect(self.prepareRecognitionDataClicked)
         self.prepare_rec_button.setEnabled(False)
+        
+        self.prepare_easyocr_button = QPushButton("Prepare EasyOCR Data")
+        easyocr_icon = QIcon(":icons/icons/file-text.svg")
+        self.prepare_easyocr_button.setIcon(easyocr_icon)
+        self.prepare_easyocr_button.setMinimumHeight(40)
+        self.prepare_easyocr_button.setFont(font)
+        self.prepare_easyocr_button.clicked.connect(self.prepareEasyOcrDataClicked)
+        self.prepare_easyocr_button.setEnabled(False)
 
         actions_layout.addWidget(self.start_button)
         actions_layout.addSpacing(20)
         actions_layout.addWidget(self.train_detector_button)
         actions_layout.addWidget(self.prepare_rec_button)
+        actions_layout.addWidget(self.prepare_easyocr_button)
         actions_layout.addWidget(self.prepare_yolo_button)
 
         main_layout.addWidget(config_group)
@@ -138,6 +153,7 @@ class TrainingSummaryView(QWidget):
             self.prepare_rec_button.setEnabled(True)
             self.prepare_yolo_button.setEnabled(True)
             self.train_detector_button.setEnabled(True)
+            self.prepare_easyocr_button.setEnabled(True)
         else:
             self.model_name_label.setText("N/A")
             self.epochs_label.setText("N/A")
@@ -150,6 +166,7 @@ class TrainingSummaryView(QWidget):
             self.prepare_rec_button.setEnabled(False)
             self.prepare_yolo_button.setEnabled(False)
             self.train_detector_button.setEnabled(False)
+            self.prepare_easyocr_button.setEnabled(False)
 
         if dataset_summary:
             num_classes = dataset_summary.get('classes', 'N/A')
@@ -159,6 +176,11 @@ class TrainingSummaryView(QWidget):
         else:
             self.num_classes_label.setText("N/A")
             self.total_images_label.setText("N/A")
+
+    def on_start_clicked(self):
+        selected_lib = self.library_select.currentText()
+        print(f"DEBUG: TrainingSummaryView emitting startTrainingClicked with '{selected_lib}'")
+        self.startTrainingClicked.emit(selected_lib)
 
 
 if __name__ == '__main__':

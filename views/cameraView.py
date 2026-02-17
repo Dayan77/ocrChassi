@@ -49,6 +49,7 @@ class CameraView(QtWidgets.QWidget):
         self.ready = False
         self.images_folder = config_ini.cam_files_path
         self.image_index = -1
+        self.filter_annotated = False
 
         self.setMinimumWidth(width)
         self.setMaximumWidth(width)
@@ -88,6 +89,13 @@ class CameraView(QtWidgets.QWidget):
         self.save_button.setMaximumWidth(60)
         save_icon = QIcon(":icons/icons/save.svg")
         self.save_button.setIcon(save_icon)
+
+        self.filter_btn = QtWidgets.QPushButton()
+        self.filter_btn.setMaximumHeight(35)
+        self.filter_btn.setMaximumWidth(60)
+        filter_icon = QIcon(":icons/icons/filter.svg")
+        self.filter_btn.setIcon(filter_icon)
+        self.filter_btn.setToolTip("Ocultar imagens com anotações (JSON)")
 
         self.file_button = QtWidgets.QPushButton()
         self.file_button.setMaximumHeight(35)
@@ -132,6 +140,17 @@ class CameraView(QtWidgets.QWidget):
 
         # Style the button to be partially transparent and smaller
         self.save_button.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(0, 0, 0, 50); /* Semi-transparent black */
+                color: white;
+                border: 2px solid white;
+                border-radius: 10px;
+                padding: 7px;
+            }
+        """)
+
+        # Style the button to be partially transparent and smaller
+        self.filter_btn.setStyleSheet("""
             QPushButton {
                 background-color: rgba(0, 0, 0, 50); /* Semi-transparent black */
                 color: white;
@@ -192,6 +211,7 @@ class CameraView(QtWidgets.QWidget):
         cam_actions.addWidget(self.live_button)
         cam_actions.addWidget(self.picture_button)
         cam_actions.addWidget(self.save_button)
+        cam_actions.addWidget(self.filter_btn)
         cam_actions.addWidget(self.file_button)  
         cam_actions.addWidget(self.previous_button)
         cam_actions.addWidget(self.next_button)
@@ -212,6 +232,7 @@ class CameraView(QtWidgets.QWidget):
         self.next_button.clicked.connect(self.next_image)
         self.picture_button.clicked.connect(self.take_picture)
         self.save_button.clicked.connect(self.save_picture)
+        self.filter_btn.clicked.connect(self.toggle_filter)
         self.isLive = False
 
     def _apply_camera_settings(self, cap, index):
@@ -351,11 +372,62 @@ class CameraView(QtWidgets.QWidget):
     def refresh_images_list(self):
         image_extensions = ('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff')
         image_files = []
+        if not self.images_folder or not os.path.exists(self.images_folder):
+            return []
+
         for filename in os.listdir(self.images_folder):
             if filename.lower().endswith(image_extensions) and filename.startswith("._") == False:
-                image_files.append(os.path.join(self.images_folder, filename))
+                full_path = os.path.join(self.images_folder, filename)
+                
+                if self.filter_annotated:
+                    json_path = full_path + ".json"
+                    if os.path.exists(json_path):
+                        continue
+
+                image_files.append(full_path)
+        
+        image_files.sort()
         return image_files
     
+    def toggle_filter(self):
+        self.filter_annotated = not self.filter_annotated
+        if self.filter_annotated:
+            self.filter_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: rgba(0, 255, 0, 50); 
+                    color: white;
+                    border: 2px solid white;
+                    border-radius: 10px;
+                    padding: 7px;
+                }
+            """)
+            QtWidgets.QMessageBox.information(self, "Filtro Ativado", "Exibindo apenas imagens sem anotações (JSON).")
+        else:
+            self.filter_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: rgba(0, 0, 0, 50); 
+                    color: white;
+                    border: 2px solid white;
+                    border-radius: 10px;
+                    padding: 7px;
+                }
+            """)
+            QtWidgets.QMessageBox.information(self, "Filtro Desativado", "Exibindo todas as imagens.")
+
+        self.images_list = self.refresh_images_list()
+        
+        # Reset to first image if list not empty
+        if self.images_list:
+            self.image_index = 0
+            self.label.setImage(self.load_image_path(self.images_list[0]))
+            self.image_path = self.images_list[0]
+            self.search_annotation_file(self.images_list[0])
+        else:
+            self.image_index = -1
+            self.label.clear()
+            self.image_path = None
+            if len(self.rois) > 0:
+                self.delete_all_rois(self.rois)
 
 
     def search_annotation_file(self, image_file):
@@ -396,6 +468,8 @@ class CameraView(QtWidgets.QWidget):
        
         if not rois:
             return
+        else:
+            _rois = rois.copy()
         
         if not self.rois:   
             self.rois = []
@@ -404,36 +478,40 @@ class CameraView(QtWidgets.QWidget):
         # self.rois = []
         self.image_chars = ""
         print(f"Drawing rois: {len(rois)}")
+        try:
+            for i in _rois:
+                x = _rois[i]['box']['x']
+                y = _rois[i]['box']['y']
+                w = _rois[i]['box']['w']
+                h = _rois[i]['box']['h']
+                roi = pg.ROI( 
+                    pos=[int(x), int(y)], 
+                    size=[int(w), int(h)], 
+                    pen=pg.mkPen('r', width=2),
+                    handlePen=pg.mkPen('w', width=1),
+                )
+                roi.setAcceptedMouseButtons(Qt.MouseButton.LeftButton)
+                roi.addScaleHandle([1, 1], [0.5, 0.5])  # Bottom-right corner for resizing
+                roi.addRotateHandle([0, 0], [0.5, 0.5])  # Top-left corner for rotation
+                roi.addScaleHandle([.5, 1], [0.2,0.2])
+                roi.setZValue(10)
+                self.rois.append(roi)
+
+                #add chars
+                self.image_chars += (_rois[i]['char'])
+
+
+                # Add the ROI to the view
+                self.label.getView().addItem(self.rois[len(self.rois)-1])
+
+                # Connect the ROI signal to a slot
+                self.rois[len(self.rois)-1].sigRegionChanged.connect(self.on_roi_changed)
+                
+                self.rois[len(self.rois)-1].sigClicked.connect(self.on_roi_selected)#roi.sigClicked.connect(self.on_roi_selected)
+
+        except Exception as e:
+            print(f"Error drawing rois: {e}")
         
-        for i in rois:
-            x = rois[i]['box']['x']
-            y = rois[i]['box']['y']
-            w = rois[i]['box']['w']
-            h = rois[i]['box']['h']
-            roi = pg.ROI( 
-                pos=[int(x), int(y)], 
-                size=[int(w), int(h)], 
-                pen=pg.mkPen('r', width=2),
-                handlePen=pg.mkPen('w', width=1),
-            )
-            roi.setAcceptedMouseButtons(Qt.MouseButton.LeftButton)
-            roi.addScaleHandle([1, 1], [0.5, 0.5])  # Bottom-right corner for resizing
-            roi.addRotateHandle([0, 0], [0.5, 0.5])  # Top-left corner for rotation
-            roi.addScaleHandle([.5, 1], [0.2,0.2])
-            roi.setZValue(10)
-            self.rois.append(roi)
-
-            #add chars
-            self.image_chars += (rois[i]['char'])
-
-
-            # Add the ROI to the view
-            self.label.getView().addItem(self.rois[len(self.rois)-1])
-
-            # Connect the ROI signal to a slot
-            self.rois[len(self.rois)-1].sigRegionChanged.connect(self.on_roi_changed)
-            
-            roi.sigClicked.connect(self.on_roi_selected)
 
         
 

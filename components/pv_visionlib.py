@@ -1,6 +1,6 @@
 import os
 import ssl
-#ssl._create_default_https_context = ssl._create_unverified_context
+ssl._create_default_https_context = ssl._create_unverified_context
 
 os.environ["KERAS_BACKEND"] = "tensorflow"
 
@@ -9,8 +9,44 @@ os.environ["KERAS_BACKEND"] = "tensorflow"
 
 #import matplotlib.pyplot as plt
 import numpy as np
+
+# Patch for libraries using np.sctypes (removed in numpy 2.0)
+if not hasattr(np, 'sctypes'):
+    np.sctypes = {
+        'int': [np.int8, np.int16, np.int32, np.int64],
+        'uint': [np.uint8, np.uint16, np.uint32, np.uint64],
+        'float': [np.float16, np.float32, np.float64],
+        'complex': [np.complex64, np.complex128],
+        'others': [bool, object, bytes, str, np.void]
+    }
+
 import random
 import tensorflow as tf
+
+# Patch for Keras Dense layer to ignore 'weights' argument (fix for keras-ocr)
+try:
+    # Try patching tensorflow.keras
+    from tensorflow import Dense
+    _original_dense_init = Dense.__init__
+    def _patched_dense_init(self, *args, **kwargs):
+        if 'weights' in kwargs:
+            kwargs.pop('weights')
+        _original_dense_init(self, *args, **kwargs)
+    Dense.__init__ = _patched_dense_init
+except Exception:
+    pass
+
+try:
+    import keras.layers
+    _original_k_dense_init = keras.layers.Dense.__init__
+    def _patched_k_dense_init(self, *args, **kwargs):
+        if 'weights' in kwargs:
+            kwargs.pop('weights')
+        _original_k_dense_init(self, *args, **kwargs)
+    keras.layers.Dense.__init__ = _patched_k_dense_init
+except ImportError:
+    pass
+
 import tensorflow_datasets as tfds
 #import pytesseract
 #import easyocr
@@ -139,10 +175,9 @@ class pvVisionLib():
         return characters
     
 
-    def collect_samples(self, image_path, output_dir, file_label, threshold, pixel, sigma, space, min_w, max_w, min_h, max_h, min_a, max_a):
+    def collect_samples(self, img, output_dir, file_label, threshold, pixel, sigma, space, min_w, max_w, min_h, max_h, min_a, max_a):
         """Segments characters from an image, saves them, and requires manual labeling."""
         # Load and preprocess the original color image
-        img = cv2.imread(image_path)
         gray = self.convert_to_gray(img)
         binary = self.convert_binary(gray, pixel, sigma, space, threshold)
         characters = self.find_characters(binary)
