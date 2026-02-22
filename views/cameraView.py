@@ -43,7 +43,7 @@ class CameraView(QtWidgets.QWidget):
     normal_pen = pg.mkPen('g', width=2)  # Verde para normal
     selected_pen = pg.mkPen('m', width=2) # Amarelo para selecionado
     rois = []
-    def __init__(self, index, width, height):
+    def __init__(self, index):
         super().__init__()
 
         self.ready = False
@@ -51,12 +51,7 @@ class CameraView(QtWidgets.QWidget):
         self.image_index = -1
         self.filter_annotated = False
 
-        self.setMinimumWidth(width)
-        self.setMaximumWidth(width)
-        self.setMinimumHeight(height)
-        self.setMaximumHeight(height)
-        
-        
+        self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
 
         self.camera_tool = QtWidgets.QHBoxLayout(self)
         self.camera_tool.setAlignment(Qt.AlignmentFlag.AlignLeading)
@@ -116,81 +111,16 @@ class CameraView(QtWidgets.QWidget):
         next_icon = QIcon(":icons/icons/arrow-right.svg") 
         self.next_button.setIcon(next_icon)
 
-        # Style the button to be partially transparent and smaller
-        self.live_button.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(0, 0, 0, 50); /* Semi-transparent black */
-                color: white;                       
-                border: 2px solid white;
-                border-radius: 5px;
-                padding: 7px;
-            }
-        """)
+        # Apply overlay style class
+        self.live_button.setProperty("class", "overlay_btn")
+        self.live_button.setCheckable(True) # Make sure it's checkable for the red state
         
-        # Style the button to be partially transparent and smaller
-        self.picture_button.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(0, 0, 0, 50); /* Semi-transparent black */
-                color: white;                       
-                border: 2px solid white;
-                border-radius: 10px;                          
-                padding: 7px;
-            }
-        """)
-
-        # Style the button to be partially transparent and smaller
-        self.save_button.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(0, 0, 0, 50); /* Semi-transparent black */
-                color: white;
-                border: 2px solid white;
-                border-radius: 10px;
-                padding: 7px;
-            }
-        """)
-
-        # Style the button to be partially transparent and smaller
-        self.filter_btn.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(0, 0, 0, 50); /* Semi-transparent black */
-                color: white;
-                border: 2px solid white;
-                border-radius: 10px;
-                padding: 7px;
-            }
-        """)
-        # Style the button to be partially transparent and smaller
-        self.file_button.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(0, 0, 0, 50); /* Semi-transparent black */
-                color: yellow;
-                border: 2px solid white;
-                border-radius: 15px;
-                padding: 7px;
-            }
-        """)
-
-        # Style the button to be partially transparent and smaller
-        self.previous_button.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(0, 0, 0, 50); /* Semi-transparent black */
-                color: white;                       
-                border: 2px solid white;
-                border-radius: 10px;                          
-                padding: 7px;
-            }
-        """)
-
-        # Style the button to be partially transparent and smaller
-        self.next_button.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(0, 0, 0, 50); /* Semi-transparent black */
-                color: white;                       
-                border: 2px solid white;
-                border-radius: 10px;                          
-                padding: 7px;
-            }
-        """)
+        self.picture_button.setProperty("class", "overlay_btn")
+        self.save_button.setProperty("class", "overlay_btn")
+        self.filter_btn.setProperty("class", "overlay_btn")
+        self.file_button.setProperty("class", "overlay_btn")
+        self.previous_button.setProperty("class", "overlay_btn")
+        self.next_button.setProperty("class", "overlay_btn")
 
         pg.setConfigOptions(imageAxisOrder='row-major')
     
@@ -223,8 +153,6 @@ class CameraView(QtWidgets.QWidget):
          
 
         self.getAvailableCameras()
-        self.width = width
-        self.height = height
         
         self.live_button.clicked.connect(self.start_live)
         self.file_button.clicked.connect(self.open_image_dialog)
@@ -391,27 +319,13 @@ class CameraView(QtWidgets.QWidget):
     
     def toggle_filter(self):
         self.filter_annotated = not self.filter_annotated
+        
+        # We now rely on QSS and maybe property updates if needed, but for now just showing the message
+        # If we wanted to change the style dynamically we could toggle a property and unpolish/polish
+        
         if self.filter_annotated:
-            self.filter_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: rgba(0, 255, 0, 50); 
-                    color: white;
-                    border: 2px solid white;
-                    border-radius: 10px;
-                    padding: 7px;
-                }
-            """)
             QtWidgets.QMessageBox.information(self, "Filtro Ativado", "Exibindo apenas imagens sem anotações (JSON).")
         else:
-            self.filter_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: rgba(0, 0, 0, 50); 
-                    color: white;
-                    border: 2px solid white;
-                    border-radius: 10px;
-                    padding: 7px;
-                }
-            """)
             QtWidgets.QMessageBox.information(self, "Filtro Desativado", "Exibindo todas as imagens.")
 
         self.images_list = self.refresh_images_list()
@@ -588,38 +502,19 @@ class CameraView(QtWidgets.QWidget):
             self.th.index = self.camera_usb_index
             #self.th.finished.connect(self.close)
             self.th.updateFrame.connect(self.setImage)
-            self.runWebCam(self.camera_usb_index, self.width, self.height)
-            # Style the button to be partially transparent and smaller
-            self.live_button.setStyleSheet("""
-                QPushButton {
-                    background-color: rgba(0, 0, 0, 10); /* Semi-transparent black */
-                    color: red;
-                    border: 2px solid white;
-                    border-radius: 10px;
-                    padding: 5px;
-                }
-            """)
+            self.runWebCam(self.camera_usb_index)
+            
+            self.live_button.setChecked(True)
         else:
             self.th.status = False
             #self.th.terminate()
             self.th = None
-            self.live_button.setStyleSheet("""
-                QPushButton {
-                    background-color: rgba(0, 0, 0, 10); /* Semi-transparent black */
-                    color: white;
-                    border: 2px solid white;
-                    border-radius: 10px;
-                    padding: 5px;
-                }
-            """)
+            self.live_button.setChecked(False)
             self.isLive = False
             
 
     @Slot(QImage)
-    def runWebCam(self, idx, width, height):
-        #print(f"Selected the variable {idx} from combo {combo.id_number}")
-        self.th.height = height-2
-        self.th.width = width-2
+    def runWebCam(self, idx):
         self.th.start()
 
     @Slot(QImage)

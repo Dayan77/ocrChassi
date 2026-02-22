@@ -13,7 +13,7 @@ class Ui_MainWindow(object):
         MainWindow.resize(950, 600)
         self.centralwidget = QtWidgets.QWidget(MainWindow)
         self.centralwidget.setObjectName("centralwidget")
-        self.centralwidget.setStyle
+
         self.gridLayout = QtWidgets.QGridLayout(self.centralwidget)
         self.gridLayout.setContentsMargins(0, 0, 0, 0)
         self.gridLayout.setSpacing(0)
@@ -236,6 +236,15 @@ class Ui_MainWindow(object):
         self.horizontalLayout_4.addLayout(self.horizontalLayout)
         spacerItem3 = QtWidgets.QSpacerItem(236, 20, QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum)
         self.horizontalLayout_4.addItem(spacerItem3)
+        self.theme_btn = QtWidgets.QPushButton(self.widget)
+        self.theme_btn.setText("")
+        icon_theme = QtGui.QIcon()
+        icon_theme.addPixmap(QtGui.QPixmap(":/icon/icon/activity-feed-32.ico"), QtGui.QIcon.Normal, QtGui.QIcon.Off) # Placeholder icon
+        self.theme_btn.setIcon(icon_theme)
+        self.theme_btn.setObjectName("theme_btn")
+        self.theme_btn.setCheckable(True)
+        self.horizontalLayout_4.addWidget(self.theme_btn)
+
         self.user_btn = QtWidgets.QPushButton(self.widget)
         self.user_btn.setText("")
         icon8 = QtGui.QIcon()

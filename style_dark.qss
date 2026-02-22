@@ -197,3 +197,24 @@ QPushButton[class="overlay_btn"]:checked {
     background-color: rgba(255, 0, 0, 150); /* Red for 'Live' active state */
     border: 1px solid #ff0000;
 }
+/* QTabWidget and scroll area fixes for Dark Mode MacOS overrides */
+QTabWidget::pane {
+    border: 1px solid #313244;
+    background-color: #1e1e2e;
+}
+QTabBar::tab {
+    background-color: #181825;
+    color: #a6adc8;
+    padding: 8px 12px;
+    border: 1px solid #313244;
+    border-bottom: none;
+}
+QTabBar::tab:selected {
+    background-color: #1e1e2e;
+    color: #cdd6f4;
+    font-weight: bold;
+    border-top: 2px solid #89b4fa;
+}
+QScrollArea, QScrollArea > QWidget > QWidget {
+    background-color: transparent;
+}

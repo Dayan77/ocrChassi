@@ -129,8 +129,11 @@ class TrainingSummaryView(QWidget):
         actions_layout.addWidget(self.prepare_easyocr_button)
         actions_layout.addWidget(self.prepare_yolo_button)
 
-        main_layout.addWidget(config_group)
-        main_layout.addWidget(dataset_group)
+        horiz_groups = QHBoxLayout()
+        horiz_groups.addWidget(config_group)
+        horiz_groups.addWidget(dataset_group)
+
+        main_layout.addLayout(horiz_groups)
         main_layout.addStretch()
         main_layout.addWidget(actions_group)
 

@@ -7,9 +7,9 @@ import cv2
 import qtawesome as qta
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QStackedWidget, QLabel, QListWidget, QListWidgetItem, QPushButton, QMessageBox,
-    QSizePolicy, QGraphicsDropShadowEffect, QFrame,
+    QSizePolicy, QGraphicsDropShadowEffect, QFrame, QScrollArea,
     QCheckBox, QComboBox, QDateEdit, QDateTimeEdit, QDial, QDoubleSpinBox,
     QFontComboBox, QLCDNumber, QLineEdit, QProgressBar, QRadioButton, QSlider,
     QSpinBox, QTimeEdit, QGroupBox, QTabWidget
@@ -38,8 +38,8 @@ class CardPanel(QWidget):
     def __init__(self, parent=None, color_bg="#2c3e50"):
         super().__init__(parent)
         self.parent_wnd = parent
-        # Set a fixed background color for the card
-        self.setStyleSheet(f"background-color: {color_bg}; border-radius: 10px;")
+        self.setProperty("class", "card")
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         
         # Create a layout for the card's content
         self.layout = QVBoxLayout(self)
@@ -64,6 +64,7 @@ class CustomCardContent(QWidget):
         super().__init__(parent)
 
         self.parent_wnd = parent
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         
@@ -83,30 +84,16 @@ class CustomCardContent(QWidget):
         
         self.image_segmentation_box = ImageSegmentationView(self.parent_wnd)
         #image_segmentation_box.setStyleSheet("font-size: 12px; background-color: #536276ff")
-        self.image_segmentation_box.setMinimumHeight(350)
-        self.image_segmentation_box.setMaximumHeight(550)
-        self.image_segmentation_box.setMinimumWidth(500)
-        self.image_segmentation_box.setMaximumWidth(800)
         layout.addWidget(self.image_segmentation_box)
 
 
         #test_button = QPushButton
         test_button = QPushButton()
         test_button.setMaximumHeight(35)
-        test_button.setMaximumWidth(60)
         test_icon = QIcon(":icons/icons/grid.svg") 
         test_button.setIcon(test_icon)
 
         # Style the button to be partially transparent and smaller
-        test_button.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(0, 0, 0, 10); /* Semi-transparent black */
-                color: white;                       
-                border: 2px solid white;
-                border-radius: 5px;
-                padding: 5px;
-            }
-        """)
 
         #layout.addWidget(test_button)
         test_button.clicked.connect(self.test_pytesseract)
@@ -144,18 +131,28 @@ class ImageSegmentationView(QFrame):
         
 
         self.parent_wnd = parent
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
+        self.main_layout = QVBoxLayout(self)
+        self.main_layout.setContentsMargins(0, 0, 0, 0)
         self.tabs = QTabWidget(self)
+        self.main_layout.addWidget(self.tabs)
 
         self.tab_segmentation_config = QWidget()
-        self.tab_segmentation_config.setFixedHeight(480)
-        self.tab_segmentation_config.setFixedWidth(800)
         self.tab_segmentation_results = QWidget()
-        self.tab_segmentation_results.setFixedHeight(480)
-        self.tab_segmentation_results.setFixedWidth(800)
 
-        self.tabs.addTab(self.tab_segmentation_config, "Segmentação")
-        self.tabs.addTab(self.tab_segmentation_results, "Caracteres")
+        scroll_config = QScrollArea()
+        scroll_config.setWidgetResizable(True)
+        scroll_config.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_config.setWidget(self.tab_segmentation_config)
+
+        scroll_results = QScrollArea()
+        scroll_results.setWidgetResizable(True)
+        scroll_results.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_results.setWidget(self.tab_segmentation_results)
+
+        self.tabs.addTab(scroll_config, "Segmentação")
+        self.tabs.addTab(scroll_results, "Caracteres")
 
         # grid_fix = QWidget(self.tab_segmentation_config)
         # grid_fix.setMaximumHeight(300)
@@ -166,7 +163,12 @@ class ImageSegmentationView(QFrame):
         layout.setSpacing(1)
         layout.setContentsMargins(1,1,1,1)
 
-        grid.addLayout(layout)
+        right_pane = QVBoxLayout()
+        right_pane.setSpacing(1)
+        right_pane.setContentsMargins(1,1,1,1)
+
+        grid.addLayout(layout, 6)
+        grid.addLayout(right_pane, 4)
         
 
         camA_radio = QRadioButton("Camera A")
@@ -190,20 +192,10 @@ class ImageSegmentationView(QFrame):
         test_button = QPushButton("Segmentação")
         test_button.setMaximumHeight(35)
         test_button.setMinimumWidth(120)
-        test_button.setMaximumWidth(120)
         test_icon = QIcon(":icons/icons/grid.svg") 
         test_button.setIcon(test_icon)
 
         # Style the button to be partially transparent and smaller
-        test_button.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(0, 0, 0, 10); /* Semi-transparent black */
-                color: white;                       
-                border: 2px solid white;
-                border-radius: 5px;
-                padding: 5px;
-            }
-        """)
         test_button.clicked.connect(self.test_pytesseract)
 
         buttons.addWidget(test_button)
@@ -213,7 +205,7 @@ class ImageSegmentationView(QFrame):
 
 
 
-        filters_row = QVBoxLayout()
+        filters_row = QHBoxLayout()
         threshold_col = QVBoxLayout()
         label_threshold = QLabel("Threshold")
         label_threshold.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -280,26 +272,10 @@ class ImageSegmentationView(QFrame):
         filters_row.addLayout(sigma_col)
         filters_row.addLayout(space_col)
 
-        grid.addLayout(filters_row)
+        right_pane.addLayout(filters_row)
 
        #width_height_row = QHBoxLayout()
         gbWidth_height = QGroupBox("Comprimento / Altura")
-        gbWidth_height.setStyleSheet("""
-            QGroupBox {
-                background-color: #0e6e4b;
-                border: 2px solid #555555;
-                border-radius: 8px;
-                margin-top: 1ex; /* Leave space for the title */
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                subcontrol-position: top center; /* Position at the top center */
-                padding: 0 8px;
-                background-color: #555555;
-                color: white;
-                border-radius: 4px;
-            }
-        """)
         gbWidth_height.setMaximumHeight(130)
         gbWidth_height.setMinimumHeight(130)
         width_height_row = QHBoxLayout()
@@ -312,26 +288,10 @@ class ImageSegmentationView(QFrame):
         width_constrains_row.addWidget(width_constrains)
         
         gbWidth.setLayout(width_constrains_row)
-        gbWidth.setStyleSheet("""
-            QGroupBox {
-                background-color: #0e6e4b;
-                border: 2px solid #555555;
-                border-radius: 8px;
-                margin-top: 1ex; /* Leave space for the title */
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                subcontrol-position: top center; /* Position at the top center */
-                padding: 0 8px;
-                background-color: #555555;
-                color: white;
-                border-radius: 4px;
-            }
-        """)
         width_height_row.addWidget(gbWidth)
         gbWidth_height.setLayout(width_height_row)
 
-        layout.addWidget(gbWidth_height)
+        right_pane.addWidget(gbWidth_height)
 
         gbHeight = QGroupBox("Filtro de altura")
         gbHeight.setMaximumHeight(80)
@@ -342,22 +302,6 @@ class ImageSegmentationView(QFrame):
         height_constrains_row.addWidget(height_constrains)
         
         gbHeight.setLayout(height_constrains_row)
-        gbHeight.setStyleSheet("""
-            QGroupBox {
-                background-color: #0e6e4b;
-                border: 2px solid #555555;
-                border-radius: 8px;
-                margin-top: 1ex; /* Leave space for the title */
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                subcontrol-position: top center; /* Position at the top center */
-                padding: 0 8px;
-                background-color: #555555;
-                color: white;
-                border-radius: 4px;
-            }
-        """)
 
 
         width_height_row.addWidget(gbHeight)
@@ -372,24 +316,8 @@ class ImageSegmentationView(QFrame):
         area_constrains_row.addWidget(area_constrains)
 
         gbArea.setLayout(area_constrains_row)
-        gbArea.setStyleSheet("""
-            QGroupBox {
-                background-color: #0e6e4b;
-                border: 2px solid #555555;
-                border-radius: 8px;
-                margin-top: 1ex; /* Leave space for the title */
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                subcontrol-position: top center; /* Position at the top center */
-                padding: 0 8px;
-                background-color: #555555;
-                color: white;
-                border-radius: 4px;
-            }
-        """)
-        layout.addWidget(gbArea)
-        grid.addStretch()
+        right_pane.addWidget(gbArea)
+        right_pane.addStretch()
         layout.addStretch()
         
 
@@ -464,7 +392,10 @@ class ImageSegmentationView(QFrame):
         pass
         
     def setup_results_tab(self):
-        self.card_results = QVBoxLayout(self.tab_segmentation_results)
+        self.card_results = QHBoxLayout(self.tab_segmentation_results)
+        self.left_pane = QVBoxLayout()
+        self.left_pane.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.right_pane = QVBoxLayout()
 
         # --- Controls moved to Results Tab ---
         controls_layout = QHBoxLayout()
@@ -474,54 +405,26 @@ class ImageSegmentationView(QFrame):
         self.flip_btn.setMinimumWidth(150)
         flip_icon = QIcon(":icons/icons/refresh-cw.svg")
         self.flip_btn.setIcon(flip_icon)
-        self.flip_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #0e6e4b; /* A distinct color */
-                color: white;                       
-                border: 2px solid white;
-                border-radius: 5px;
-                padding: 5px;
-            }
-        """)
         self.flip_btn.clicked.connect(self.flip_image_horizontally)
         
         generate_data_btn = QPushButton("Gerar Dados de Treino")
         generate_data_btn.setMaximumHeight(35)
         generate_data_btn.setMinimumWidth(120)
-        generate_data_btn.setMaximumWidth(120)
         generate_data_icon = QIcon(":icons/icons-cl/zap.svg") 
         generate_data_btn.setIcon(generate_data_icon)
-        generate_data_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #0e6e4b; /* A distinct color */
-                color: white;                       
-                border: 2px solid white;
-                border-radius: 5px;
-                padding: 5px;
-            }
-        """)
         generate_data_btn.clicked.connect(self.on_generate_training_data_clicked)
 
         controls_layout.addWidget(self.flip_btn)
         controls_layout.addWidget(generate_data_btn)
         controls_layout.addStretch()
         
-        self.card_results.addLayout(controls_layout)
+        self.left_pane.addLayout(controls_layout)
         
         #Characters
         self.alphabet_chars = QLineEdit()
         self.alphabet_chars.setMaxLength(100)
         self.alphabet_chars.setPlaceholderText("Caracteres para treinamento")
         # Style the QLineEddit to be partially transparent and smaller
-        self.alphabet_chars.setStyleSheet("""
-            QLineEdit {
-                background-color: rgba(0, 0, 0, 10); /* Semi-transparent black */
-                color: white;                       
-                border: 2px solid white;
-                border-radius: 5px;
-                padding: 5px;
-            }
-        """)
 
         #buttons
         results_actions_row = QHBoxLayout()
@@ -529,117 +432,55 @@ class ImageSegmentationView(QFrame):
         save_samples_btn = QPushButton("Exportar")
         save_samples_btn.setToolTip("Exportar anotações manuais para arquivo .json")
         save_samples_btn.setMaximumHeight(35)
-        save_samples_btn.setMaximumWidth(100)
         save_samples_icon = QIcon(":icons/icons/external-link.svg") 
         save_samples_btn.setIcon(save_samples_icon)
 
         # Style the button to be partially transparent and smaller
-        save_samples_btn.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(0, 0, 0, 10); /* Semi-transparent black */
-                color: white;                       
-                border: 2px solid white;
-                border-radius: 5px;
-                padding: 5px;
-            }
-        """)
 
         clear_samples_btn = QPushButton("Limpar")
         clear_samples_btn.text = "Limpar"
         clear_samples_btn.setMaximumHeight(35)
-        clear_samples_btn.setMaximumWidth(100)
         clear_samples_icon = QIcon(":icons/icons/trash-2.svg") 
         clear_samples_btn.setIcon(clear_samples_icon)
 
         # Style the button to be partially transparent and smaller
-        clear_samples_btn.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(0, 0, 0, 10); /* Semi-transparent black */
-                color: white;                       
-                border: 2px solid white;
-                border-radius: 5px;
-                padding: 5px;
-            }
-        """)
 
         delete_samples_btn = QPushButton()
         delete_samples_btn.setText("selecionado")
         delete_samples_btn.setMaximumHeight(35)
-        delete_samples_btn.setFixedWidth(100)
         delete_samples_icon = QIcon(":icons/icons/trash.svg") 
         delete_samples_btn.setIcon(delete_samples_icon)
 
         # Style the button to be partially transparent and smaller
-        delete_samples_btn.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(0, 0, 0, 10); /* Semi-transparent black */
-                color: white;                       
-                border: 2px solid white;
-                border-radius: 5px;
-                padding: 5px;
-            }
-        """)
 
         refresh_samples_btn = QPushButton("Atualizar")
         refresh_samples_btn.setMaximumHeight(35)
-        refresh_samples_btn.setFixedWidth(100)
         refresh_samples_icon = QIcon(":icons/icons/refresh-cw.svg") 
         refresh_samples_btn.setIcon(refresh_samples_icon)
 
         # Style the button to be partially transparent and smaller
-        refresh_samples_btn.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(0, 0, 0, 10); /* Semi-transparent black */
-                color: white;                       
-                border: 2px solid white;
-                border-radius: 5px;
-                padding: 5px;
-            }
-        """)
 
         add_roi_btn = QPushButton("Adicionar")
         add_roi_btn.setMaximumHeight(35)
-        add_roi_btn.setFixedWidth(100)
         add_roi_icon = QIcon(":icons/icons/plus-square.svg") 
         add_roi_btn.setIcon(add_roi_icon)
 
         # Style the button to be partially transparent and smaller
-        add_roi_btn.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(0, 0, 0, 10); /* Semi-transparent black */
-                color: white;                       
-                border: 2px solid white;
-                border-radius: 5px;
-                padding: 5px;
-            }
-        """)
 
         detect_chars_btn = QPushButton("Detectar Caracteres (IA)")
         detect_chars_btn.setToolTip("Usa o modelo de detecção para encontrar e criar ROIs automaticamente.")
         detect_chars_btn.setMaximumHeight(35)
-        detect_chars_btn.setFixedWidth(180)
         detect_chars_icon = QIcon(":icons/icons/cpu.svg")
         detect_chars_btn.setIcon(detect_chars_icon)
-        detect_chars_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #0e6e4b; /* A distinct color */
-                color: white;
-                border: 2px solid white;
-                border-radius: 5px;
-                padding: 5px;
-            }
-            QPushButton:hover {
-                background-color: #1a8a61;
-            }
-        """)
         detect_chars_btn.clicked.connect(self.on_detect_characters_clicked)
 
-        results_actions_row.addWidget(refresh_samples_btn)
-        results_actions_row.addWidget(add_roi_btn)
-        results_actions_row.addWidget(save_samples_btn)
-        results_actions_row.addWidget(delete_samples_btn)
-        results_actions_row.addWidget(clear_samples_btn)
-        results_actions_row.addWidget(detect_chars_btn)
+        results_actions_grid = QGridLayout()
+        results_actions_grid.addWidget(refresh_samples_btn, 0, 0)
+        results_actions_grid.addWidget(add_roi_btn, 0, 1)
+        results_actions_grid.addWidget(save_samples_btn, 0, 2)
+        results_actions_grid.addWidget(delete_samples_btn, 1, 0)
+        results_actions_grid.addWidget(clear_samples_btn, 1, 1)
+        results_actions_grid.addWidget(detect_chars_btn, 1, 2)
 
         add_roi_btn.clicked.connect(self.on_add_roi)
         delete_samples_btn.clicked.connect(self.on_delete_roi)
@@ -649,63 +490,43 @@ class ImageSegmentationView(QFrame):
 
         #list view with images
         self.list_segmentation_results = CustomListView("Segmentação de caracteres")
-        self.list_segmentation_results.setFixedHeight(630)
-        self.list_segmentation_results.setFixedWidth(350)
 
         #Export images path
         self.export_images_path = QLineEdit()
         self.export_images_path.setMaxLength(100)
         self.export_images_path.setPlaceholderText("Pasta para armazenamento de anotações de imagens")
         # Style the QLineEddit to be partially transparent and smaller
-        self.export_images_path.setStyleSheet("""
-            QLineEdit {
-                background-color: rgba(0, 0, 0, 10); /* Semi-transparent black */
-                color: white;                       
-                border: 2px solid white;
-                border-radius: 5px;
-                padding: 5px;
-            }
-        """)
 
         export_slices_btn = QPushButton("Exportar Imagens Treinamento")
         export_slices_btn.setMaximumHeight(35)
-        export_slices_btn.setFixedWidth(250)
         export_slices_icon = QIcon(":icons/icons/image.svg") 
         export_slices_btn.setIcon(export_slices_icon)
-        export_slices_btn.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(0, 0, 0, 10); /* Semi-transparent black */
-                color: white;                       
-                border: 2px solid white;
-                border-radius: 5px;
-                padding: 5px;
-            }
-        """)
 
         #add widgets
-        self.card_results.addWidget(self.alphabet_chars)
-        self.card_results.addLayout(results_actions_row)
+        self.left_pane.addWidget(self.alphabet_chars)
+        self.left_pane.addLayout(results_actions_grid)
 
-        results_data_row = QHBoxLayout()
         export_path_layout = QVBoxLayout()
         export_path_layout.addWidget(self.export_images_path)
         export_path_layout.addWidget(export_slices_btn, alignment=Qt.AlignmentFlag.AlignLeft)
         export_slices_btn.clicked.connect(self.on_export_slices_clicked)
 
-        results_data_row.addLayout(export_path_layout)
-        results_data_row.addWidget(self.list_segmentation_results)
-        self.card_results.addLayout(results_data_row)
-        
+        self.left_pane.addLayout(export_path_layout)
+        self.left_pane.addStretch()
 
-        self.card_results.addStretch()
+        self.right_pane.addWidget(self.list_segmentation_results)
+        
+        self.card_results.addLayout(self.left_pane, 4)
+        self.card_results.addLayout(self.right_pane, 6)
 
     def populate_results(self, chars, samples, cam_index):
         self.cam_index = cam_index
         self.list_segmentation_results.list_widget.clear()
         
-        for index, item in samples.items():
-            img_cv = self.updateCV_Image(item["image"])
-            self.list_segmentation_results.add_list_item(img_cv, item["char"])
+        if samples:
+            for index, item in samples.items():
+                img_cv = self.updateCV_Image(item["image"])
+                self.list_segmentation_results.add_list_item(img_cv, item["char"])
             
         self.tabs.setCurrentWidget(self.tab_segmentation_results)
 
@@ -730,9 +551,10 @@ class ImageSegmentationView(QFrame):
         self.list_segmentation_results.list_widget.clear()
         samples = self.parent_wnd.cameras[self.cam_index].refresh_rois(self.alphabet_chars.text())
 
-        for index, item in samples.items():
-            img_cv = self.updateCV_Image(item["image"])
-            self.list_segmentation_results.add_list_item(img_cv, item["char"])
+        if samples:
+            for index, item in samples.items():
+                img_cv = self.updateCV_Image(item["image"])
+                self.list_segmentation_results.add_list_item(img_cv, item["char"])
 
         self.alphabet_chars.setText(self.parent_wnd.cameras[self.cam_index].image_chars)
 

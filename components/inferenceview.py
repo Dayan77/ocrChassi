@@ -294,6 +294,20 @@ class InferenceView(QWidget):
         else:
             self.run_inference_btn.setEnabled(self.inference_model is not None)
 
+    def process_image(self, library):
+        if not library:
+            return
+        # Find the library in the combo box (case-insensitive)
+        index = -1
+        for i in range(self.library_select.count()):
+            if self.library_select.itemText(i).lower() == library.lower():
+                index = i
+                break
+        
+        if index >= 0:
+            self.library_select.setCurrentIndex(index)
+            self.run_inference()
+
     @Slot()
     def run_inference(self):
         library = self.library_select.currentText()

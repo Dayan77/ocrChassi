@@ -10,7 +10,7 @@ app_company_logo = ""
 
 #----- Cameras ------#
 cam_qty = 2
-cam_usb_index = [ 0, 1]
+cam_usb_index = [ 1, 0]
 cam_usb_color = [ 1, 1]
 cam_usb_flip = [ 1, 1]
 cam_auto_exposure = [ 0, 0] # 1 for auto, 0 for manual
@@ -20,7 +20,7 @@ cam_wb_temperature = [ 4000, 4000] # Manual white balance
 cam_auto_focus = [ 0, 0]    # 1 for auto, 0 for manual
 cam_focus = [ 255, 0]         # Manual focus value (0-255)
 
-cam_files_path = "/Users/dayansantos/Dev/ocrChassi/models/sense_chassi_factory_2026"
+cam_files_path = "/Users/dayansantos/Dev/ocrChassi/models/sense_chassi_19022026"
 default_roi_x = 50
 default_roi_y = 50
 default_roi_w = 30
@@ -31,10 +31,11 @@ default_roi_h = 30
 
 
 #----- Models ------#
+model_name = "sensebike_ocr_model.h5"
 model_train_epocs = 30
 DATA_DIR = 'dataset' # Directory with your character subfolders
-MODEL_SAVE_PATH = 'sensebike_ocr_model.keras'
-LABEL_ENCODER_SAVE_PATH = 'sensebike_label_encoder.npy'
+MODEL_SAVE_PATH = 'sensebike_ocr_model.h5'
+LABEL_ENCODER_SAVE_PATH = 'sensebike_ocr_model.h5.npy'
 IMG_HEIGHT = 28
 IMG_WIDTH = 28
 EPOCHS = 15
@@ -60,3 +61,10 @@ program_path = ""
 
 
 #----- Production ------#
+number_of_characters = 10
+threshold_char_ocr = 0.7
+demo_mode = False
+trigger_delay = 1000
+production_model_library = "PyTorch" # "PyTorch" or "TensorFlow"
+production_cam1_flip = False
+production_cam2_flip = False

@@ -31,8 +31,8 @@ class CardModel(QWidget):
     def __init__(self, parent=None, color_bg="#2c3e50"):
         super().__init__(parent)
         self.parent_wnd = parent
-        # Set a fixed background color for the card
-        self.setStyleSheet(f"background-color: {color_bg}; border-radius: 10px;")
+        self.setProperty("class", "card")
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         
         # Create a layout for the card's content
         self.layout = QVBoxLayout(self)
@@ -59,6 +59,7 @@ class TrainingCardContent(QWidget):
         super().__init__(parent)
 
         self.parent_wnd = parent
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         
@@ -78,37 +79,24 @@ class TrainingCardContent(QWidget):
         
         self.model_train_box = ModelView(self.parent_wnd)
         #image_segmentation_box.setStyleSheet("font-size: 12px; background-color: #536276ff")
-        self.model_train_box.setMinimumHeight(350)
-        self.model_train_box.setMaximumHeight(550)
-        self.model_train_box.setMinimumWidth(500)
-        self.model_train_box.setMaximumWidth(800)
         layout.addWidget(self.model_train_box)
 
 
         #test_button = QPushButton
         test_button = QPushButton()
         test_button.setMaximumHeight(35)
-        test_button.setMaximumWidth(60)
         test_icon = QIcon(":icons/icons/grid.svg") 
         test_button.setIcon(test_icon)
 
         # Style the button to be partially transparent and smaller
-        test_button.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(0, 0, 0, 10); /* Semi-transparent black */
-                color: white;                       
-                border: 2px solid white;
-                border-radius: 5px;
-                padding: 5px;
-            }
-        """)
 
         #layout.addWidget(test_button)
-        test_button.clicked.connect(self.test_pytesseract)
+        test_button.clicked.connect(self.test_inference)
 
-    def test_pytesseract(self):
-        visionLib = pv_visionlib.pvVisionLib()
-        visionLib.collect_samples(self.parent_wnd.cameras[0].image_path, '../models/', 'ocr_samples')
+    def test_inference(self):
+        if self.parent_wnd.model_json.model:
+            library = self.parent_wnd.model_json.model.production_model_library
+            self.model_train_box.inference_view.process_image(library)
 
         
 
@@ -118,29 +106,18 @@ class ModelView(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.parent_wnd = parent
-        height = 440
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        self.main_layout = QVBoxLayout(self)
+        self.main_layout.setContentsMargins(0, 0, 0, 0)
         self.tabs = QTabWidget(self)
-        self.tabs.setFixedHeight(height)
-        self.tabs.setFixedWidth(800)
-        
+        self.main_layout.addWidget(self.tabs)
         self.tab_config = QWidget()
-        self.tab_config.setFixedHeight(height)
-        self.tab_config.setFixedWidth(800)
         self.tab_edit = QWidget()
-        self.tab_edit.setFixedHeight(height)
-        self.tab_edit.setFixedWidth(800)
         self.tab_data = QWidget()
-        self.tab_data.setFixedHeight(height)
-        self.tab_data.setFixedWidth(800)
         self.tab_results = QWidget()
-        self.tab_results.setFixedHeight(height)
-        self.tab_results.setFixedWidth(800)
         self.tab_easyocr = QWidget()
-        self.tab_easyocr.setFixedHeight(height)
-        self.tab_easyocr.setFixedWidth(800)
         self.tab_inference = QWidget()
-        self.tab_inference.setFixedHeight(height)
-        self.tab_inference.setFixedWidth(800)
 
         self.tabs.addTab(self.tab_config, "Modelo")
         self.tabs.addTab(self.tab_edit, "Anotações")
@@ -158,12 +135,20 @@ class ModelView(QFrame):
         self.dataset_view = DatasetView()
         edit_tab_layout = QVBoxLayout(self.tab_edit)
         edit_tab_layout.setContentsMargins(0, 0, 0, 0)
-        edit_tab_layout.addWidget(self.dataset_view)
+        scroll_dataset_view = QScrollArea()
+        scroll_dataset_view.setWidgetResizable(True)
+        scroll_dataset_view.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_dataset_view.setWidget(self.dataset_view)
+        edit_tab_layout.addWidget(scroll_dataset_view)
 
         # --- Integrate TrainingSummaryView into the "Treinamento" tab ---
         self.training_summary_view = TrainingSummaryView()
         train_tab_layout = QVBoxLayout(self.tab_data)
-        train_tab_layout.addWidget(self.training_summary_view)
+        scroll_training_summary_view = QScrollArea()
+        scroll_training_summary_view.setWidgetResizable(True)
+        scroll_training_summary_view.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_training_summary_view.setWidget(self.training_summary_view)
+        train_tab_layout.addWidget(scroll_training_summary_view)
         self.dataset_view.datasetLoaded.connect(self.update_training_summary)
         self.training_summary_view.startTrainingClicked.connect(self.start_training)
         self.training_summary_view.prepareRecognitionDataClicked.connect(self.on_prepare_recognition_data_clicked)
@@ -174,19 +159,31 @@ class ModelView(QFrame):
         # --- Integrate ResultsView into the "Resultados" tab ---
         self.results_view = ResultsView()
         results_tab_layout = QVBoxLayout(self.tab_results)
-        results_tab_layout.addWidget(self.results_view)
+        scroll_results_view = QScrollArea()
+        scroll_results_view.setWidgetResizable(True)
+        scroll_results_view.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_results_view.setWidget(self.results_view)
+        results_tab_layout.addWidget(scroll_results_view)
 
         # --- Integrate DatasetView into the "EasyOCR Data" tab ---
         self.easyocr_view = DatasetView()
         easyocr_tab_layout = QVBoxLayout(self.tab_easyocr)
         easyocr_tab_layout.setContentsMargins(0, 0, 0, 0)
-        easyocr_tab_layout.addWidget(self.easyocr_view)
+        scroll_easyocr_view = QScrollArea()
+        scroll_easyocr_view.setWidgetResizable(True)
+        scroll_easyocr_view.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_easyocr_view.setWidget(self.easyocr_view)
+        easyocr_tab_layout.addWidget(scroll_easyocr_view)
         self.easyocr_view.changesApplied.connect(self.on_easyocr_changes_applied)
 
         # --- Integrate InferenceView into the "Inferência" tab ---
         self.inference_view = InferenceView(self.parent_wnd)
         inference_tab_layout = QVBoxLayout(self.tab_inference)
-        inference_tab_layout.addWidget(self.inference_view)
+        scroll_inference_view = QScrollArea()
+        scroll_inference_view.setWidgetResizable(True)
+        scroll_inference_view.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_inference_view.setWidget(self.inference_view)
+        inference_tab_layout.addWidget(scroll_inference_view)
         # Connect a signal to notify InferenceView when a model is loaded/changed
         self.parent_wnd.modelDataChanged.connect(self.inference_view.on_model_loaded)
         self.inference_view.on_model_loaded() # Call once at startup
@@ -340,39 +337,19 @@ class ModelJsonView(QWidget):
         
         open_json_btn = QPushButton("Carregar")
         open_json_btn.setMaximumHeight(35)
-        open_json_btn.setMaximumWidth(100)
         open_json_icon = QIcon(":icons/icons/folder.svg") 
         open_json_btn.setIcon(open_json_icon)
 
         # Style the button to be partially transparent and smaller
-        open_json_btn.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(0, 0, 0, 10); /* Semi-transparent black */
-                color: white;                       
-                border: 2px solid white;
-                border-radius: 5px;
-                padding: 5px;
-            }
-        """)
 
         open_json_btn.clicked.connect(self.open_file_json)
         
         save_json_btn = QPushButton("Salvar")
         save_json_btn.setMaximumHeight(35)
-        save_json_btn.setMaximumWidth(100)
         save_json_icon = QIcon(":icons/icons/save.svg") 
         save_json_btn.setIcon(save_json_icon)
 
         # Style the button to be partially transparent and smaller
-        save_json_btn.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(0, 0, 0, 10); /* Semi-transparent black */
-                color: white;                       
-                border: 2px solid white;
-                border-radius: 5px;
-                padding: 5px;
-            }
-        """)
         save_json_btn.clicked.connect(self.save_file_json)
 
         json_actions_row.addWidget(open_json_btn)
@@ -383,59 +360,21 @@ class ModelJsonView(QWidget):
         #Form
         json_group_box = QGroupBox("Informações do modelo IA")
         # Style the QGroupBox to be partially transparent and smaller
-        json_group_box.setStyleSheet("""
-            QGroupBox {
-                background-color: rgba(0, 0, 0, 10); /* Semi-transparent black */
-                color: white;                       
-                border: 2px solid white;
-                border-radius: 5px;
-                padding: 5px;
-            }
-        """)
         json_form_layout = QFormLayout()
         json_form_layout.setFormAlignment(Qt.AlignmentFlag.AlignLeft)
         json_form_layout.setContentsMargins(0, 25, 0, 0)
         
 
         self.json_modelname_edit = QLineEdit()
-        self.json_modelname_edit.setFixedWidth(250)
         # Style the QLineEddit to be partially transparent and smaller
-        self.json_modelname_edit.setStyleSheet("""
-            QLineEdit {
-                background-color: rgba(0, 0, 0, 10); /* Semi-transparent black */
-                color: white;                       
-                border: 2px solid white;
-                border-radius: 5px;
-                padding: 5px;
-            }
-        """)
         json_form_layout.addRow("Modelo:", self.json_modelname_edit)
 
         json_filename_row = QHBoxLayout()
         self.json_filename_edit = QLineEdit()
-        self.json_filename_edit.setFixedWidth(520)
         # Style the QLineEddit to be partially transparent and smaller
-        self.json_filename_edit.setStyleSheet("""
-            QLineEdit {
-                background-color: rgba(0, 0, 0, 10); /* Semi-transparent black */
-                color: white;                       
-                border: 2px solid white;
-                border-radius: 5px;
-                padding: 5px;
-            }
-        """)
         json_filename_btn = QPushButton()
         filename_icon = QIcon(":icons/icons/external-link.svg") 
         json_filename_btn.setIcon(filename_icon)
-        json_filename_btn.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(0, 0, 0, 10); /* Semi-transparent black */
-                color: white;                       
-                border: 2px solid white;
-                border-radius: 5px;
-                padding: 5px;
-            }
-        """)
         json_filename_btn.clicked.connect(self.browse_filename)        
 
         json_filename_row.addWidget(self.json_filename_edit)
@@ -445,30 +384,11 @@ class ModelJsonView(QWidget):
 
         json_encoder_row = QHBoxLayout()
         self.json_encoderfile_edit = QLineEdit()
-        self.json_encoderfile_edit.setFixedWidth(520)
         # Style the QLineEddit to be partially transparent and smaller
-        self.json_encoderfile_edit.setStyleSheet("""
-            QLineEdit {
-                background-color: rgba(0, 0, 0, 10); /* Semi-transparent black */
-                color: white;                       
-                border: 2px solid white;
-                border-radius: 5px;
-                padding: 5px;
-            }
-        """)
 
         json_encoder_btn = QPushButton()
         encoder_icon = QIcon(":icons/icons/external-link.svg") 
         json_encoder_btn.setIcon(encoder_icon)
-        json_encoder_btn.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(0, 0, 0, 10); /* Semi-transparent black */
-                color: white;                       
-                border: 2px solid white;
-                border-radius: 5px;
-                padding: 5px;
-            }
-        """)
         json_encoder_btn.clicked.connect(self.browse_encoderfile)
 
         json_encoder_row.addWidget(self.json_encoderfile_edit)
@@ -477,30 +397,11 @@ class ModelJsonView(QWidget):
 
         json_traindataset_row = QHBoxLayout()
         self.json_traindataset_edit = QLineEdit()
-        self.json_traindataset_edit.setFixedWidth(520)
         # Style the QLineEddit to be partially transparent and smaller
-        self.json_traindataset_edit.setStyleSheet("""
-            QLineEdit {
-                background-color: rgba(0, 0, 0, 10); /* Semi-transparent black */
-                color: white;                       
-                border: 2px solid white;
-                border-radius: 5px;
-                padding: 5px;
-            }
-        """)
 
         json_traindataset_btn = QPushButton()
         traindataset_icon = QIcon(":icons/icons/external-link.svg") 
         json_traindataset_btn.setIcon(traindataset_icon)
-        json_traindataset_btn.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(0, 0, 0, 10); /* Semi-transparent black */
-                color: white;                       
-                border: 2px solid white;
-                border-radius: 5px;
-                padding: 5px;
-            }
-        """)
         json_traindataset_btn.clicked.connect(self.browse_train_folder)
 
         json_traindataset_row.addWidget(self.json_traindataset_edit)
@@ -509,31 +410,12 @@ class ModelJsonView(QWidget):
 
         json_testdataset_row = QHBoxLayout()
         self.json_testdataset_edit = QLineEdit()
-        self.json_testdataset_edit.setFixedWidth(520)
         
         # Style the QLineEddit to be partially transparent and smaller
-        self.json_testdataset_edit.setStyleSheet("""
-            QLineEdit {
-                background-color: rgba(0, 0, 0, 10); /* Semi-transparent black */
-                color: white;                       
-                border: 2px solid white;
-                border-radius: 5px;
-                padding: 5px;
-            }
-        """)
 
         json_testdataset_btn = QPushButton()
         json_testdataset_icon = QIcon(":icons/icons/external-link.svg")
         json_testdataset_btn.setIcon(json_testdataset_icon)
-        json_testdataset_btn.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(0, 0, 0, 10); /* Semi-transparent black */
-                color: white;                       
-                border: 2px solid white;
-                border-radius: 5px;
-                padding: 5px;
-            }
-        """)
         json_testdataset_btn.clicked.connect(self.browse_test_folder)
 
         json_testdataset_row.addWidget(self.json_testdataset_edit)
@@ -544,28 +426,9 @@ class ModelJsonView(QWidget):
         # --- YOLO Dataset Path ---
         yolo_dataset_row = QHBoxLayout()
         self.json_yolodataset_edit = QLineEdit()
-        self.json_yolodataset_edit.setFixedWidth(520)
-        self.json_yolodataset_edit.setStyleSheet("""
-            QLineEdit {
-                background-color: rgba(0, 0, 0, 10);
-                color: white;
-                border: 2px solid white;
-                border-radius: 5px;
-                padding: 5px;
-            }
-        """)
         yolo_dataset_btn = QPushButton()
         yolo_dataset_icon = QIcon(":icons/icons/crosshair.svg")
         yolo_dataset_btn.setIcon(yolo_dataset_icon)
-        yolo_dataset_btn.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(0, 0, 0, 10);
-                color: white;
-                border: 2px solid white;
-                border-radius: 5px;
-                padding: 5px;
-            }
-        """)
         yolo_dataset_btn.clicked.connect(self.browse_yolo_folder)
         yolo_dataset_row.addWidget(self.json_yolodataset_edit)
         yolo_dataset_row.addWidget(yolo_dataset_btn)
@@ -574,28 +437,9 @@ class ModelJsonView(QWidget):
         # --- Detector Model Path ---
         detector_model_row = QHBoxLayout()
         self.json_detectormodel_edit = QLineEdit()
-        self.json_detectormodel_edit.setFixedWidth(520)
-        self.json_detectormodel_edit.setStyleSheet("""
-            QLineEdit {
-                background-color: rgba(0, 0, 0, 10);
-                color: white;
-                border: 2px solid white;
-                border-radius: 5px;
-                padding: 5px;
-            }
-        """)
         detector_model_btn = QPushButton()
         detector_model_icon = QIcon(":icons/icons/cpu.svg")
         detector_model_btn.setIcon(detector_model_icon)
-        detector_model_btn.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(0, 0, 0, 10);
-                color: white;
-                border: 2px solid white;
-                border-radius: 5px;
-                padding: 5px;
-            }
-        """)
         detector_model_btn.clicked.connect(self.browse_detector_model)
         detector_model_row.addWidget(self.json_detectormodel_edit)
         detector_model_row.addWidget(detector_model_btn)
@@ -604,28 +448,9 @@ class ModelJsonView(QWidget):
         # --- Annotation Dataset Path ---
         annotation_dataset_row = QHBoxLayout()
         self.json_annotationdataset_edit = QLineEdit()
-        self.json_annotationdataset_edit.setFixedWidth(520)
-        self.json_annotationdataset_edit.setStyleSheet("""
-            QLineEdit {
-                background-color: rgba(0, 0, 0, 10);
-                color: white;
-                border: 2px solid white;
-                border-radius: 5px;
-                padding: 5px;
-            }
-        """)
         annotation_dataset_btn = QPushButton()
         annotation_dataset_icon = QIcon(":icons/icons/edit.svg")
         annotation_dataset_btn.setIcon(annotation_dataset_icon)
-        annotation_dataset_btn.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(0, 0, 0, 10);
-                color: white;
-                border: 2px solid white;
-                border-radius: 5px;
-                padding: 5px;
-            }
-        """)
         annotation_dataset_btn.clicked.connect(self.browse_annotation_folder)
         annotation_dataset_row.addWidget(self.json_annotationdataset_edit)
         annotation_dataset_row.addWidget(annotation_dataset_btn)
@@ -638,29 +463,11 @@ class ModelJsonView(QWidget):
         self.json_classes_edit = QLineEdit()
         #self.json_classes_edit.setFixedHeight(70)
         # Style the QLineEddit to be partially transparent and smaller
-        self.json_classes_edit.setStyleSheet("""
-            QLineEdit {
-                background-color: rgba(0, 0, 0, 10); /* Semi-transparent black */
-                color: white;                       
-                border: 2px solid white;
-                border-radius: 5px;
-                padding: 5px;
-            }
-        """)
         #json_form_layout.addRow("Classes:", self.json_classes_edit)
 
         self.json_epochs_edit = QSpinBox()
         self.json_epochs_edit.setRange(1, 1000)
         # Style the QLineEddit to be partially transparent and smaller
-        self.json_epochs_edit.setStyleSheet("""
-            QSpinBox {
-                background-color: rgba(0, 0, 0, 10); /* Semi-transparent black */
-                color: white;                       
-                border: 2px solid white;
-                border-radius: 5px;
-                padding: 5px;
-            }
-        """)
         json_bottom_data.addWidget(self.json_classes_edit)
         #json_form_layout.addRow("Epocas:", self.json_epochs_edit)
 
