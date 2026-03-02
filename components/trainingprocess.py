@@ -168,7 +168,12 @@ def train_model_cnn(model_data, progress_callback, log_callback):
     # --- 1. Load Detector and Prepare Data Files ---
     try:
         detector_model = YOLO(model_data.detector_model_path)
-        log_callback("Detector model loaded successfully for data generation.")
+        # ensure CPU execution to avoid CUDA-related nms errors during data gen
+        try:
+            detector_model.to('cpu')
+        except Exception:
+            pass
+        log_callback("Detector model loaded successfully for data generation (CPU mode).")
 
         image_files = [os.path.join(annotation_dir, f) for f in os.listdir(annotation_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
         random.shuffle(image_files)

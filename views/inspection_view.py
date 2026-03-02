@@ -98,9 +98,24 @@ class InferenceWorker(QObject):
             
             elif self.detector_model:
                 # YOLO + Recognition
-                results = self.detector_model(frame, verbose=False)
-                boxes = results[0].boxes.xyxy.cpu().numpy()
-                boxes = sorted(boxes, key=lambda x: x[0])
+                try:
+                    det_kwargs = {'verbose': False}
+                    if self.device is not None:
+                        det_kwargs['device'] = str(self.device)
+                    results = self.detector_model(frame, **det_kwargs)
+                except Exception as e:
+                    msg = str(e)
+                    if 'torchvision::nms' in msg and 'CUDA' in msg:
+                        print("CUDA backend failed for YOLO, retrying on CPU.")
+                        results = self.detector_model(frame, verbose=False, device='cpu')
+                    else:
+                        print(f"YOLO inference error: {e}")
+                        results = None
+                if not results:
+                    boxes = []
+                else:
+                    boxes = results[0].boxes.xyxy.cpu().numpy()
+                    boxes = sorted(boxes, key=lambda x: x[0])
                 
                 img_h = int(self.model_data.get('image_height', 64))
                 img_w = int(self.model_data.get('image_width', 64))
@@ -515,6 +530,15 @@ class InspectionView(QWidget):
                 if detector_path and os.path.exists(detector_path):
                     if YOLO:
                         self.detector_model = YOLO(detector_path)
+                        # choose device (cuda if available) and move model
+                        if torch and torch.cuda.is_available():
+                            self.device = torch.device("cuda")
+                        else:
+                            self.device = torch.device("cpu")
+                        try:
+                            self.detector_model.to(self.device)
+                        except Exception:
+                            pass
                     else:
                         print("YOLO not installed.")
                 
@@ -666,6 +690,10 @@ class InspectionView(QWidget):
                 part1 = "".join(c for c, conf in cam1_chars[:k1])
                 part2 = "".join(c for c, conf in cam2_chars[L2-k2:]) if k2 > 0 else ""
                 final_string = part1 + part2
+
+        # optionally reverse the computed string based on config
+        if getattr(config_ini, 'production_results_inverted', False) and final_string:
+            final_string = final_string[::-1]
 
         display_text = final_string if final_string else characters_output
         if not display_text.strip():

@@ -68,3 +68,4 @@ trigger_delay = 1000
 production_model_library = "PyTorch" # "PyTorch" or "TensorFlow"
 production_cam1_flip = False
 production_cam2_flip = False
+production_results_inverted = True

