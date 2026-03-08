@@ -12,7 +12,6 @@ import config_ini
 
 class ProgramView(QtWidgets.QWidget):
     modelDataChanged = Signal()
-    cameras = []
     camera_width = 0
     camera_height = 0
     model_json = ModelJson()
@@ -20,6 +19,7 @@ class ProgramView(QtWidgets.QWidget):
     
     def __init__(self, width, height):
         super().__init__()
+        self.cameras = []
         
         # Ensure ProgramView itself has a layout so its children resize dynamically
         self.root_layout = QtWidgets.QVBoxLayout(self)
@@ -84,6 +84,10 @@ class ProgramView(QtWidgets.QWidget):
             self.findChild(ModelView).update_all_views()
             self.modelDataChanged.emit()
         
+    def shutdown(self):
+        for cam in self.cameras:
+            if hasattr(cam, 'stop_live'):
+                cam.stop_live()
 
     def create_views(self, qty):
         #layout_cams = QtWidgets.QVBoxLayout()

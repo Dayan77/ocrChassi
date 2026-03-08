@@ -129,13 +129,71 @@ if torch:
                 image = np.zeros((self.height, self.width), dtype=np.uint8)
             else:
                 image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-                image = cv2.resize(image, (self.width, self.height))
+                # Scale image to (self.width, self.height) without cropping
+                if image.shape[0] != self.height or image.shape[1] != self.width:
+                    image = cv2.resize(image, (self.width, self.height), interpolation=cv2.INTER_AREA)
             
             image = image / 255.0
             # Add channel dim: (1, H, W) for PyTorch
             image = np.expand_dims(image, axis=0)
             
             return torch.from_numpy(image).float(), self.class_to_idx[label]
+
+    def load_pytorch_model_with_class_mismatch_handling(model, model_path, device, num_classes):
+        """
+        Load a PyTorch model's state_dict, handling class mismatches gracefully.
+        If the saved model has a different number of output classes, loads only the 
+        compatible feature layers and reinitializes the classifier.
+        
+        Args:
+            model: The PyTorch model instance to load into
+            model_path: Path to the .pth file
+            device: Device to use (cpu or cuda)
+            num_classes: Expected number of classes for the current model
+        
+        Returns:
+            Tuple (success: bool, message: str, requires_retraining: bool)
+        """
+        try:
+            # Try direct load first
+            checkpoint = torch.load(model_path, map_location=device)
+            model.load_state_dict(checkpoint, strict=False)
+            return True, "Model loaded successfully.", False
+        except RuntimeError as e:
+            error_str = str(e)
+            # Check if it's a class mismatch error
+            if "size mismatch" in error_str and "classifier" in error_str:
+                try:
+                    print(f"Detected class mismatch. Attempting to load compatible layers...")
+                    checkpoint = torch.load(model_path, map_location=device)
+                    
+                    # Build a new state dict by excluding classifier mismatches
+                    new_state_dict = {}
+                    incompatible_keys = []
+                    
+                    for key, value in checkpoint.items():
+                        try:
+                            # Try to load this parameter
+                            current_param = dict(model.named_parameters())[key]
+                            if value.shape == current_param.shape:
+                                new_state_dict[key] = value
+                            else:
+                                incompatible_keys.append(key)
+                                print(f"  Skipping {key}: shape {value.shape} != {current_param.shape}")
+                        except KeyError:
+                            incompatible_keys.append(key)
+                    
+                    # Load the compatible parameters
+                    model.load_state_dict(new_state_dict, strict=False)
+                    msg = f"Model loaded with class mismatch detected. {len(incompatible_keys)} layers reinitialized. Retraining recommended."
+                    print(msg)
+                    return True, msg, True
+                except Exception as inner_e:
+                    return False, f"Failed to handle class mismatch: {inner_e}", False
+            else:
+                return False, f"Error loading model: {e}", False
+        except Exception as e:
+            return False, f"Unexpected error loading model: {e}", False
 
 else:
     SimpleCNN = None

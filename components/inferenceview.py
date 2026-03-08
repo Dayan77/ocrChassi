@@ -15,12 +15,9 @@ import config_ini
 from components.models import SimpleCNN
 
 try:
-    import tensorflow as tf
-    #from tensorflow import keras
     from ultralytics import YOLO # For our custom detector
     from components.resultsview import ResultImageItem # Re-use this handy widget
 except ImportError:
-    tf = None
     YOLO = None
 
 try:
@@ -124,7 +121,7 @@ class InferenceView(QWidget):
 
         self.library_select = QComboBox()
         # EasyOCR no longer used; keep KerasOCR for compatibility
-        self.library_select.addItems(["TensorFlow", "PyTorch", "KerasOCR"])
+        self.library_select.addItems(["PyTorch", "KerasOCR"])
         self.library_select.currentTextChanged.connect(self.on_library_changed)
 
         self.run_inference_btn = QPushButton("Executar Inferência")
@@ -215,7 +212,7 @@ class InferenceView(QWidget):
         if current_lib.lower() == 'pytorch':
             self.library_select.setCurrentText("PyTorch")
         else:
-            self.library_select.setCurrentText("TensorFlow")
+            self.library_select.setCurrentText("PyTorch")
 
         # Note: earlier versions always forced PyTorch here.  that was unnecessary
         # and prevented the config setting from having any effect.
@@ -241,7 +238,7 @@ class InferenceView(QWidget):
             recognition_model_path = base + ".pth"
 
         # Check if paths exist (skip check for EasyOCR/KerasOCR as they don't use this path)
-        if library not in ['pytorch', 'kerasocr', 'pytorch'] and (not recognition_model_path or not os.path.exists(recognition_model_path) or not detector_model_path or not os.path.exists(detector_model_path)):
+        if library not in ['pytorch', 'kerasocr'] and (not recognition_model_path or not os.path.exists(recognition_model_path) or not detector_model_path or not os.path.exists(detector_model_path)):
             self.run_inference_btn.setEnabled(False)
             self.inference_model = None
             self.detector_model = None
@@ -266,23 +263,28 @@ class InferenceView(QWidget):
             except Exception:
                 pass
             
-            if library == 'tensorflow':
-                try:
-                    self.inference_model = keras.models.load_model(recognition_model_path)
-                    self.device = None
-                except Exception as e:
-                    self.inference_model = None
-                    QMessageBox.warning(self, "Erro de Carregamento", 
-                        f"Falha ao carregar modelo TensorFlow.\n"
-                        f"Verifique se o arquivo '{recognition_model_path}' é um modelo TensorFlow válido.\n"
-                        f"Erro: {e}")
-            elif library == 'pytorch':
+            if library == 'pytorch':
                 if torch and SimpleCNN:
                     # reuse the previously determined device (cpu or cuda)
                     self.inference_model = SimpleCNN(len(model_data.model_classes), int(model_data.image_height), int(model_data.image_width)).to(self.device)
                     try:
-                        self.inference_model.load_state_dict(torch.load(recognition_model_path, map_location=self.device))
-                        self.inference_model.eval()
+                        from components.models import load_pytorch_model_with_class_mismatch_handling
+                        success, message, requires_retraining = load_pytorch_model_with_class_mismatch_handling(
+                            self.inference_model, recognition_model_path, self.device, len(model_data.model_classes)
+                        )
+                        if success:
+                            self.inference_model.eval()
+                            if requires_retraining:
+                                QMessageBox.information(self, "Aviso", 
+                                    f"Modelo carregado, mas com desajuste de classes.\n\n{message}\n\n"
+                                    f"Recomenda-se retreinar o modelo com o dataset novo.")
+                        else:
+                            self.inference_model = None
+                            QMessageBox.warning(self, "Erro de Carregamento", 
+                                f"Falha ao carregar modelo PyTorch.\n"
+                                f"Verifique se o arquivo '{recognition_model_path}' é um modelo PyTorch válido.\n"
+                                f"Erro: {message}")
+                            print(f"PyTorch load error: {message}")
                     except Exception as e:
                         self.inference_model = None
                         QMessageBox.warning(self, "Erro de Carregamento", 
@@ -310,7 +312,7 @@ class InferenceView(QWidget):
     def on_library_changed(self, text):
         # when user switches between the two local model frameworks, reload
         # the models so that any path conversions happen.
-        if text in ["TensorFlow", "PyTorch"]:
+        if text in ["PyTorch"]:
             self.on_model_loaded()
 
         # if using non-custom backends we still allow inference button, but
@@ -356,6 +358,93 @@ class InferenceView(QWidget):
             camera.delete_all_rois(camera.rois)
             
         return camera.actual_image.copy() if camera.actual_image is not None else None
+
+    def filter_detections(self, boxes, confs):
+        """
+        Filters detected boxes based on heuristics:
+        1. Overlap/Intersection (NMS-like)
+        2. Size consistency (outliers removal)
+        3. Vertical alignment (single line assumption)
+        """
+        if len(boxes) == 0:
+            return []
+
+        candidates = []
+        for i, box in enumerate(boxes):
+            x1, y1, x2, y2 = box
+            candidates.append({
+                'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2,
+                'w': x2 - x1, 'h': y2 - y1,
+                'cx': (x1 + x2) / 2, 'cy': (y1 + y2) / 2,
+                'conf': confs[i]
+            })
+
+        # 1. Overlap Removal (Custom NMS)
+        # Sort by confidence descending to keep the best boxes
+        candidates.sort(key=lambda x: x['conf'], reverse=True)
+        keep = []
+
+        for c in candidates:
+            discard = False
+            for k in keep:
+                # Calculate Intersection
+                xA = max(c['x1'], k['x1'])
+                yA = max(c['y1'], k['y1'])
+                xB = min(c['x2'], k['x2'])
+                yB = min(c['y2'], k['y2'])
+                interArea = max(0, xB - xA) * max(0, yB - yA)
+                
+                if interArea > 0:
+                    boxAArea = c['w'] * c['h']
+                    boxBArea = k['w'] * k['h']
+                    
+                    # IoU
+                    iou = interArea / float(boxAArea + boxBArea - interArea)
+                    
+                    # Intersection over Minimum Area (check for containment)
+                    minArea = min(boxAArea, boxBArea)
+                    io_min = interArea / minArea if minArea > 0 else 0
+                    
+                    # Thresholds: 50% intersection as requested (using 0.4/0.5 to be safe)
+                    if iou > 0.4 or io_min > 0.5:
+                        discard = True
+                        break
+            
+            if not discard:
+                keep.append(c)
+        
+        candidates = keep
+        if not candidates:
+            return []
+
+        # 2. Size Consistency
+        # Use median height as reference
+        heights = [c['h'] for c in candidates]
+        median_h = np.median(heights)
+        
+        # Filter outliers: e.g., < 0.6*median or > 1.6*median
+        candidates = [c for c in candidates if 0.6 * median_h < c['h'] < 1.6 * median_h]
+        
+        if not candidates:
+            return []
+
+        # 3. Vertical Alignment
+        # Use median Y-center as reference line
+        cys = [c['cy'] for c in candidates]
+        median_cy = np.median(cys)
+        
+        # Filter boxes that are too far vertically from the line
+        # Threshold: deviation > 0.6 * median_height
+        candidates = [c for c in candidates if abs(c['cy'] - median_cy) < (median_h * 0.6)]
+
+        # Return boxes sorted left-to-right
+        candidates.sort(key=lambda x: x['x1'])
+        
+        result_boxes = []
+        for c in candidates:
+            result_boxes.append([c['x1'], c['y1'], c['x2'], c['y2']])
+            
+        return np.array(result_boxes)
 
     def run_custom_inference(self, library):
         """
@@ -428,7 +517,10 @@ class InferenceView(QWidget):
                 QMessageBox.critical(self, "Erro YOLO", f"Falha ao executar detector YOLO:\n{e}")
                 return
 
-        boxes = detection_results[0].boxes.xyxy.cpu().numpy() # Get boxes in xyxy format
+        det_results = detection_results[0].boxes
+        raw_boxes = det_results.xyxy.cpu().numpy()
+        raw_confs = det_results.conf.cpu().numpy()
+        boxes = self.filter_detections(raw_boxes, raw_confs)
         
         if len(boxes) == 0:
             self.predicted_text_label.setText("<b>Nenhum caractere detectado.</b>")
@@ -498,15 +590,7 @@ class InferenceView(QWidget):
             confidence = 0.0
             valid_prediction = False
 
-            if library == 'TensorFlow' and self.inference_model:
-                input_data = np.expand_dims(np.expand_dims(normalized_char, axis=-1), axis=0)
-                prediction = self.inference_model.predict(input_data, verbose=0)
-                if prediction.any():
-                    predicted_idx = np.argmax(prediction)
-                    predicted_char = self.class_names[predicted_idx]
-                    confidence = np.max(prediction) * 100
-                    valid_prediction = True
-            elif library == 'PyTorch':
+            if library == 'PyTorch':
                 if self.inference_model:
                     # Prepare input: (H, W, 1) -> (1, 1, H, W)
                     input_tensor = torch.from_numpy(normalized_char).unsqueeze(0).unsqueeze(0).float().to(self.device)

@@ -2,7 +2,7 @@ import os
 import ssl
 ssl._create_default_https_context = ssl._create_unverified_context
 
-os.environ["KERAS_BACKEND"] = "tensorflow"
+# os.environ["KERAS_BACKEND"] = "tensorflow"
 
 #import keras
 #from keras import layers
@@ -21,33 +21,42 @@ if not hasattr(np, 'sctypes'):
     }
 
 import random
-import tensorflow as tf
+# import tensorflow as tf
+
+# Configure TensorFlow to use memory growth
+# gpus = tf.config.list_physical_devices('GPU')
+# if gpus:
+#     try:
+#         for gpu in gpus:
+#             tf.config.experimental.set_memory_growth(gpu, True)
+#     except RuntimeError as e:
+#         print(e)
 
 # Patch for Keras Dense layer to ignore 'weights' argument (fix for keras-ocr)
-try:
-    # Try patching tensorflow.keras
-    from tensorflow import Dense
-    _original_dense_init = Dense.__init__
-    def _patched_dense_init(self, *args, **kwargs):
-        if 'weights' in kwargs:
-            kwargs.pop('weights')
-        _original_dense_init(self, *args, **kwargs)
-    Dense.__init__ = _patched_dense_init
-except Exception:
-    pass
+# try:
+#     # Try patching tensorflow.keras
+#     from tensorflow import Dense
+#     _original_dense_init = Dense.__init__
+#     def _patched_dense_init(self, *args, **kwargs):
+#         if 'weights' in kwargs:
+#             kwargs.pop('weights')
+#         _original_dense_init(self, *args, **kwargs)
+#     Dense.__init__ = _patched_dense_init
+# except Exception:
+#     pass
 
-try:
-    import keras.layers
-    _original_k_dense_init = keras.layers.Dense.__init__
-    def _patched_k_dense_init(self, *args, **kwargs):
-        if 'weights' in kwargs:
-            kwargs.pop('weights')
-        _original_k_dense_init(self, *args, **kwargs)
-    keras.layers.Dense.__init__ = _patched_k_dense_init
-except ImportError:
-    pass
+# try:
+#     import keras.layers
+#     _original_k_dense_init = keras.layers.Dense.__init__
+#     def _patched_k_dense_init(self, *args, **kwargs):
+#         if 'weights' in kwargs:
+#             kwargs.pop('weights')
+#         _original_k_dense_init(self, *args, **kwargs)
+#     keras.layers.Dense.__init__ = _patched_k_dense_init
+# except ImportError:
+#     pass
 
-import tensorflow_datasets as tfds
+# import tensorflow_datasets as tfds
 #import pytesseract
 #import easyocr
 

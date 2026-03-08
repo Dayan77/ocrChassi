@@ -36,8 +36,8 @@ model_train_epocs = 30
 DATA_DIR = 'dataset' # Directory with your character subfolders
 MODEL_SAVE_PATH = 'sensebike_ocr_model.h5'
 LABEL_ENCODER_SAVE_PATH = 'sensebike_ocr_model.h5.npy'
-IMG_HEIGHT = 28
-IMG_WIDTH = 28
+IMG_HEIGHT = 128
+IMG_WIDTH = 128
 EPOCHS = 15
 
 #----- Segmentation -----#

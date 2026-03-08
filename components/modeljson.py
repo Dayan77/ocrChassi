@@ -36,6 +36,19 @@ class ModelJson():
     model = None
     def create_model(self, model_name: str, model_filename: str, encoder_filename: str, model_train_dataset: str, 
                      model_test_dataset: str, yolo_dataset_path: str, annotation_dataset_path: str, detector_model_path: str, model_classes: List[str], train_epochs: int, image_height: int, image_width: int):
+        # If the caller did not provide classes or provided a partial list,
+        # default to the full set of alphanumeric characters (0-9, A-Z).
+        if not model_classes:
+            model_classes = [str(i) for i in range(10)] + [chr(c) for c in range(ord('A'), ord('Z') + 1)]
+        else:
+            # ensure we always have the complete set in case the list is incomplete
+            default_set = set([str(i) for i in range(10)] + [chr(c) for c in range(ord('A'), ord('Z') + 1)])
+            provided_set = set(model_classes)
+            if provided_set != default_set:
+                # merge and sort to avoid losing any characters
+                merged = sorted(default_set.union(provided_set))
+                model_classes = merged
+
         self.model = ModelAi(model_name=model_name, model_filename=model_filename, encoder_filename=encoder_filename, model_train_dataset=model_train_dataset,
                              model_test_dataset=model_test_dataset, yolo_dataset_path=yolo_dataset_path, annotation_dataset_path=annotation_dataset_path, detector_model_path=detector_model_path, model_classes=model_classes, train_epochs=train_epochs, image_height=image_height, image_width=image_width )
         

@@ -536,6 +536,10 @@ class DatasetView(QWidget):
                 # return False
 
         os.makedirs(destination_path, exist_ok=True)
+        # create empty folders for all alphanumeric characters so that trainers see consistent structure
+        default_chars = [str(i) for i in range(10)] + [chr(c) for c in range(ord('A'), ord('Z')+1)]
+        for ch in default_chars:
+            os.makedirs(os.path.join(destination_path, ch), exist_ok=True)
 
         # --- Load detector model ---
         try:
@@ -548,6 +552,8 @@ class DatasetView(QWidget):
         visionlib = vision_lib.pvVisionLib()
         img_h, img_w = model_data.image_height, model_data.image_width
         count = 0
+        from collections import defaultdict
+        class_counts = defaultdict(int)
 
         for filename in os.listdir(source_path):
             if not filename.lower().endswith(('.png', '.jpg', '.jpeg')):
@@ -571,9 +577,10 @@ class DatasetView(QWidget):
             # --- Match detected boxes with annotations using IoU ---
             annotation_list = list(annotations.values())
 
+            # track how many samples are generated per class (do not reset per image)
             for i, detected_box in enumerate(boxes):
                 best_match = None
-                highest_iou = 0.5  # Set a threshold to avoid bad matches
+                highest_iou = 0.3  # lower threshold to avoid missing annotations
 
                 for ann in annotation_list:
                     iou = self._calculate_iou(ann['box'], detected_box)
@@ -583,29 +590,53 @@ class DatasetView(QWidget):
 
                 if best_match:
                     true_char = best_match['char']
-                    if true_char == '?': continue # Skip unlabeled characters
+                    if true_char == '?':
+                        continue  # Skip unlabeled characters
 
                     x_min, y_min, x_max, y_max = map(int, detected_box)
 
                     # This is the exact same preprocessing as in InferenceView
                     char_img = gray_img[y_min:y_max, x_min:x_max]
+                    if char_img.size == 0:
+                        continue
                     h, w = char_img.shape
-                    if h > w:
-                        pad = (h - w) // 2
-                        char_img = cv2.copyMakeBorder(char_img, 0, 0, pad, pad, cv2.BORDER_CONSTANT, value=[0])
-                    elif w > h:
-                        pad = (w - h) // 2
-                        char_img = cv2.copyMakeBorder(char_img, pad, pad, 0, 0, cv2.BORDER_CONSTANT, value=[0])
-                    
-                    resized_char = cv2.resize(char_img, (img_w, img_h), interpolation=cv2.INTER_AREA)
+                    min_size = 128
+                    # If either dimension is not 128, scale to 128x128 without cropping
+                    if h != min_size or w != min_size:
+                        resized_char = cv2.resize(char_img, (min_size, min_size), interpolation=cv2.INTER_AREA)
+                    else:
+                        resized_char = char_img
+                    # contrast enhancement
+                    try:
+                        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+                        resized_char = clahe.apply(resized_char)
+                    except Exception:
+                        pass
 
                     class_folder = os.path.join(destination_path, true_char)
                     os.makedirs(class_folder, exist_ok=True)
                     save_path = os.path.join(class_folder, f"{os.path.splitext(filename)[0]}_char_{i}.png")
                     cv2.imwrite(save_path, resized_char)
                     count += 1
+                    class_counts[true_char] += 1
 
-        QMessageBox.information(parent_widget, "Success", f"Recognition dataset prepared successfully.\n{count} character images were created.")
+            # summary for this image (optional debug)
+            if class_counts:
+                # per-image summary already printed above
+                pass
+        # after processing all files, report class counts
+        if class_counts:
+            missing = []
+            default_chars = [str(i) for i in range(10)] + [chr(c) for c in range(ord('A'), ord('Z')+1)]
+            for c in default_chars:
+                if class_counts.get(c, 0) == 0:
+                    missing.append(c)
+            summary = f"Total characters: {count}.\nCounts per class: {dict(class_counts)}"
+            if missing:
+                summary += f"\nMissing classes: {missing}"
+        else:
+            summary = f"Total characters: {count}. No characters were extracted."
+        QMessageBox.information(parent_widget, "Success", f"Recognition dataset prepared successfully.\n{summary}")
         return True
 
     def prepare_easyocr_dataset(self, source_path, destination_path, parent_widget=None):

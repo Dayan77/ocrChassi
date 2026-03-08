@@ -185,7 +185,8 @@ class ModelView(QFrame):
         scroll_inference_view.setWidget(self.inference_view)
         inference_tab_layout.addWidget(scroll_inference_view)
         # Connect a signal to notify InferenceView when a model is loaded/changed
-        self.parent_wnd.modelDataChanged.connect(self.inference_view.on_model_loaded)
+        if self.parent_wnd and hasattr(self.parent_wnd, 'modelDataChanged'):
+            self.parent_wnd.modelDataChanged.connect(self.inference_view.on_model_loaded)
         self.inference_view.on_model_loaded() # Call once at startup
 
         # --- Setup for scrollable config tab ---
@@ -223,16 +224,17 @@ class ModelView(QFrame):
         model_data = self.parent_wnd.model_json.model
         self.training_summary_view.update_summary(model_data, dataset_summary)
 
-    def start_training(self, library="TensorFlow"):
-        """Slot to initiate the training process."""
-        print(f"DEBUG: CardModel.start_training called with library='{library}'")
+    def start_training(self, library="PyTorch"):
+        """Slot to initiate the training process. Always use PyTorch internally."""
+        # ignore the incoming library argument and hardcode PyTorch
+        print(f"DEBUG: CardModel.start_training forcing PyTorch (received '{library}')")
         model_data = self.parent_wnd.model_json.model
         if not model_data:
             # You might want to show a QMessageBox here
             print("No model data loaded.")
             return
         
-        dialog = TrainingProcessDialog(model_data, library, self)
+        dialog = TrainingProcessDialog(model_data, "PyTorch", self)
         dialog.trainingCompleted.connect(self.on_training_completed)
         dialog.validationTestCompleted.connect(self.on_validation_completed)
         dialog.exec()
@@ -524,8 +526,8 @@ class ModelJsonView(QWidget):
                     self.json_detectormodel_edit.text(),
                     list(self.json_classes_edit.text()), # Convert string back to list of chars
                     self.json_epochs_edit.value(),
-                    self.json_imageheight_edit.value(),
-                    self.json_imagewidth_edit.value()
+                    128,
+                    128
                 )
             else:
                 self.parent_wnd.model_json.model.model_name = self.json_modelname_edit.text()
@@ -538,8 +540,8 @@ class ModelJsonView(QWidget):
                 self.parent_wnd.model_json.model.yolo_dataset_path = self.json_yolodataset_edit.text()
                 self.parent_wnd.model_json.model.model_classes = list(self.json_classes_edit.text())
                 self.parent_wnd.model_json.model.train_epochs = self.json_epochs_edit.value()
-                self.parent_wnd.model_json.model.image_height = self.json_imageheight_edit.value()
-                self.parent_wnd.model_json.model.image_width = self.json_imagewidth_edit.value()
+                self.parent_wnd.model_json.model.image_height = 128
+                self.parent_wnd.model_json.model.image_width = 128
 
             if self.parent_wnd.model_json.save_to_file(self.json_filename_edit.text()):
                 QMessageBox.information(self, "Sucesso", "Arquivo JSON salvo com sucesso!")
@@ -683,7 +685,8 @@ class ModelJsonView(QWidget):
                         yolo_dataset_path=str(yolo_dir),
                         annotation_dataset_path=str(annotation_dir),
                         detector_model_path=str(detector_path),
-                        model_classes=[], 
+                        # initialize with the full alphanumeric set
+                        model_classes=[str(i) for i in range(10)] + [chr(c) for c in range(ord('A'), ord('Z')+1)], 
                         train_epochs=50,
                         image_height=224,
                         image_width=224
