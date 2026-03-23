@@ -297,6 +297,15 @@ class ModelView(QFrame):
         """Receives results from the training dialog and updates relevant views."""
         stats, class_names = result
 
+        # Ensure stats has default float values to prevent formatting errors in resultsview
+        if not stats:
+            stats = {
+                "final_accuracy": 0.0,
+                "final_loss": 0.0,
+                "final_val_accuracy": 0.0,
+                "final_val_loss": 0.0
+            }
+
         # Update the results view with stats
         self.results_view.update_training_summary(stats)
 

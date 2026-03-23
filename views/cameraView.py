@@ -21,10 +21,12 @@ import json
 import time
 import os
 import traceback
+import re
 from pathlib import Path
 import sys
 from PySide6 import QtCore, QtWidgets
 from PySide6.QtCore import Qt, QThread, Signal, Slot, QDateTime, QDir
+from PySide6.QtCore import Qt, QThread, Signal, Slot, QDateTime, QDir, QObject
 from PySide6.QtGui import QImage, QColor
 from PySide6.QtGui import QIcon, QPixmap, QImage
 from PySide6.QtMultimedia import QMediaDevices
@@ -33,10 +35,49 @@ import numpy as np
 
 import pv_visionlib
 import pyqtgraph as pg
+from PySide6.QtWidgets import QProgressDialog, QMessageBox
 
 
 import icons_rc, images_rc, config_ini
 color_bg="#b1b5b99f"
+
+def update_config_file(cam_config_index, new_focus, new_exposure):
+    """
+    ATENÇÃO: Esta função modifica diretamente o arquivo config_ini.py.
+    É uma abordagem frágil, mas funciona para o propósito atual.
+    """
+    config_path = 'config_ini.py'
+    try:
+        with open(config_path, 'r') as f:
+            lines = f.readlines()
+
+        def update_list_value(line, key, index, value):
+            if line.strip().startswith(key):
+                match = re.search(r'\[(.*?)\]', line)
+                if match:
+                    try:
+                        items = json.loads(f'[{match.group(1)}]')
+                        if 0 <= index < len(items):
+                            items[index] = value
+                            new_list_str = json.dumps(items, separators=(', ', ': '))
+                            return f"{key} = {new_list_str}\n"
+                    except (json.JSONDecodeError, IndexError):
+                        pass # Fallback se a análise falhar ou o índice estiver fora
+            return line
+
+        with open(config_path, 'w') as f:
+            for line in lines:
+                line = update_list_value(line, 'cam_focus', cam_config_index, new_focus)
+                line = update_list_value(line, 'cam_exposure', cam_config_index, new_exposure)
+                
+                # Desabilitar o modo automático se os valores foram ajustados
+                if new_focus != "Não Suportado":
+                    line = update_list_value(line, 'cam_auto_focus', cam_config_index, 0)
+                if new_exposure != "Não Suportado":
+                    line = update_list_value(line, 'cam_auto_exposure', cam_config_index, 0)
+                f.write(line)
+    except Exception as e:
+        print(f"Erro ao atualizar o arquivo de configuração: {e}")
 
 class CameraView(QtWidgets.QWidget):
     image_path = None
@@ -45,6 +86,7 @@ class CameraView(QtWidgets.QWidget):
     selected_pen = pg.mkPen('m', width=2) # Amarelo para selecionado
     rois = []
     annotation_data = None          # loaded JSON dict for current image
+    auto_adjust_roi = None
     def __init__(self, index):
         super().__init__()
 
@@ -87,6 +129,13 @@ class CameraView(QtWidgets.QWidget):
         self.picture_button.setMaximumHeight(35)
         self.picture_button.setMaximumWidth(60)
 
+        self.auto_adjust_button = QtWidgets.QPushButton()
+        self.auto_adjust_button.setMaximumHeight(35)
+        self.auto_adjust_button.setMaximumWidth(60)
+        auto_adjust_icon = QIcon(":icons/icons/zap.svg")
+        self.auto_adjust_button.setIcon(auto_adjust_icon)
+        self.auto_adjust_button.setToolTip("Ajustar parâmetros da câmera automaticamente")
+
         #picture_icon = QIcon(":icons/icons/camera.svg") 
         self.picture_button.setIcon(self.tint_icon(":icons/icons/camera.svg", "green"))
 
@@ -125,6 +174,7 @@ class CameraView(QtWidgets.QWidget):
         # Apply overlay style class
         self.live_button.setProperty("class", "overlay_btn")
         self.live_button.setCheckable(True) # Make sure it's checkable for the red state
+        self.auto_adjust_button.setProperty("class", "overlay_btn")
         
         self.picture_button.setProperty("class", "overlay_btn")
         self.save_button.setProperty("class", "overlay_btn")
@@ -169,6 +219,7 @@ class CameraView(QtWidgets.QWidget):
         
         cam_actions.addWidget(self.live_button)
         cam_actions.addWidget(self.picture_button)
+        cam_actions.addWidget(self.auto_adjust_button)
         cam_actions.addWidget(self.save_button)
         cam_actions.addWidget(self.filter_btn)
         cam_actions.addWidget(self.file_button)  
@@ -189,24 +240,197 @@ class CameraView(QtWidgets.QWidget):
         self.next_button.clicked.connect(self.next_image)
         self.picture_button.clicked.connect(self.take_picture)
         self.save_button.clicked.connect(self.save_picture)
+        self.auto_adjust_button.clicked.connect(self.run_auto_adjust)
         self.filter_btn.clicked.connect(self.toggle_filter)
         self.isLive = False
         self.th = None
 
     def _apply_camera_settings(self, cap, index):
         """Applies camera settings from config_ini to a VideoCapture object."""
-        # Exposure
-        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, config_ini.cam_auto_exposure[index])
-        if not config_ini.cam_auto_exposure[index]:
-            cap.set(cv2.CAP_PROP_EXPOSURE, config_ini.cam_exposure[index])
-        # White Balance
-        cap.set(cv2.CAP_PROP_AUTO_WB, config_ini.cam_auto_wb[index])
-        if not config_ini.cam_auto_wb[index]:
-            cap.set(cv2.CAP_PROP_WB_TEMPERATURE, config_ini.cam_wb_temperature[index])
-        # Focus
-        cap.set(cv2.CAP_PROP_AUTOFOCUS, config_ini.cam_auto_focus[index])
-        if not config_ini.cam_auto_focus[index]:
-            cap.set(cv2.CAP_PROP_FOCUS, config_ini.cam_focus[index])
+        import importlib
+        import time
+        try:
+            importlib.reload(config_ini) # Atualiza as vars com base no arquivo em tempo real
+        except Exception as e:
+            print(f"Aviso: Falha ao recarregar config_ini.py: {e}")
+
+        # self.camera_usb_index is now the configuration index (0, 1, ...)
+        config_idx = self.camera_usb_index
+
+        # Safety check: Ensure config_idx is within bounds of the setting lists
+        if not isinstance(config_idx, int) or config_idx >= len(config_ini.cam_auto_exposure):
+            print(f"Aviso: Índice de configuração de câmera inválido {config_idx}. Usando 0.")
+            config_idx = 0
+
+        device_path = None
+        if isinstance(self.camera_usb_index, str) and self.camera_usb_index.startswith("/dev/video"):
+            device_path = self.camera_usb_index
+        elif isinstance(index, str) and index.startswith("/dev/video"):
+            device_path = index
+            
+        if cap and cap.isOpened():
+            # Aplica via OpenCV primeiro
+            auto_exp = 3 if config_ini.cam_auto_exposure[config_idx] else 1
+            cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, auto_exp)
+            if not config_ini.cam_auto_exposure[config_idx]:
+                cap.set(cv2.CAP_PROP_EXPOSURE, config_ini.cam_exposure[config_idx])
+            
+            cap.set(cv2.CAP_PROP_AUTO_WB, config_ini.cam_auto_wb[config_idx])
+            if not config_ini.cam_auto_wb[config_idx]:
+                cap.set(cv2.CAP_PROP_WB_TEMPERATURE, config_ini.cam_wb_temperature[config_idx])
+                
+            cap.set(cv2.CAP_PROP_AUTOFOCUS, config_ini.cam_auto_focus[config_idx])
+            if not config_ini.cam_auto_focus[config_idx]:
+                cap.set(cv2.CAP_PROP_FOCUS, config_ini.cam_focus[config_idx])
+
+        if device_path:
+            import subprocess
+            auto_exp = 3 if config_ini.cam_auto_exposure[config_idx] else 1
+            try:
+                # Utilizamos o v4l2-ctl para forçar os parâmetros no driver USB Linux
+                subprocess.run(['v4l2-ctl', '-d', device_path, '-c', f'exposure_auto={auto_exp}'], stderr=subprocess.DEVNULL)
+                if not config_ini.cam_auto_exposure[config_idx]:
+                    subprocess.run(['v4l2-ctl', '-d', device_path, '-c', f'exposure_absolute={config_ini.cam_exposure[config_idx]}'], stderr=subprocess.DEVNULL)
+                    subprocess.run(['v4l2-ctl', '-d', device_path, '-c', 'exposure_auto_priority=0'], stderr=subprocess.DEVNULL)
+                    subprocess.run(['v4l2-ctl', '-d', device_path, '-c', 'gain_auto=0'], stderr=subprocess.DEVNULL)
+                    subprocess.run(['v4l2-ctl', '-d', device_path, '-c', 'autogain=0'], stderr=subprocess.DEVNULL)
+                
+                wb_auto = config_ini.cam_auto_wb[config_idx]
+                subprocess.run(['v4l2-ctl', '-d', device_path, '-c', f'white_balance_temperature_auto={wb_auto}'], stderr=subprocess.DEVNULL)
+                if not wb_auto:
+                    subprocess.run(['v4l2-ctl', '-d', device_path, '-c', f'white_balance_temperature={config_ini.cam_wb_temperature[config_idx]}'], stderr=subprocess.DEVNULL)
+                
+                focus_auto = config_ini.cam_auto_focus[config_idx]
+                subprocess.run(['v4l2-ctl', '-d', device_path, '-c', f'focus_auto={focus_auto}'], stderr=subprocess.DEVNULL)
+                if not focus_auto:
+                    subprocess.run(['v4l2-ctl', '-d', device_path, '-c', f'focus_absolute={config_ini.cam_focus[config_idx]}'], stderr=subprocess.DEVNULL)
+                
+                time.sleep(0.5) # Aguarda a lente/sensor da câmera aplicar as configurações físicas
+            except Exception as e:
+                print(f"Aviso: v4l2-ctl não funcionou ou não está instalado: {e}")
+
+    def run_auto_adjust(self):
+        device_path = self.resolve_camera_index()
+        if not (isinstance(device_path, str) and device_path.startswith('/dev/video')):
+            QMessageBox.warning(self, "Erro", "O auto ajuste só funciona com câmeras V4L2 (ex: /dev/videoX).")
+            return
+            
+        if self.auto_adjust_roi is None:
+            if self.actual_image is None:
+                QMessageBox.warning(self, "Sem Imagem", "Capture ou carregue uma imagem para definir a área de ajuste.")
+                return
+            
+            img_h, img_w = self.actual_image.shape[:2]
+            w, h = int(img_w * 0.3), int(img_h * 0.3)
+            x, y = int((img_w - w) / 2), int((img_h - h) / 2)
+            
+            self.auto_adjust_roi = pg.ROI(
+                pos=[x, y],
+                size=[w, h],
+                pen=pg.mkPen('c', width=3, style=Qt.DashLine),
+                handlePen=pg.mkPen('c', width=1)
+            )
+            self.auto_adjust_roi.addScaleHandle([1, 1], [0.5, 0.5])
+            self.auto_adjust_roi.addScaleHandle([0, 0], [0.5, 0.5])
+            self.auto_adjust_roi.setZValue(20)
+            self.label.getView().addItem(self.auto_adjust_roi)
+            
+            self.auto_adjust_button.setIcon(QIcon(":icons/icons/check-circle.svg"))
+            self.auto_adjust_button.setToolTip("Confirmar Área e Iniciar Auto Ajuste")
+            
+            QMessageBox.information(self, "Área de Ajuste", 
+                "Foi adicionada uma caixa tracejada azul na imagem.\n\n"
+                "1. Posicione e redimensione-a sobre a área que deseja focar (ex: chassi).\n"
+                "2. Clique novamente no botão de Auto Ajuste para confirmar.")
+            return
+
+        # Confirmar e extrair coordenadas da ROI
+        pos = self.auto_adjust_roi.pos()
+        size = self.auto_adjust_roi.size()
+        roi_rect = (int(pos.x()), int(pos.y()), int(size.x()), int(size.y()))
+        
+        self.label.getView().removeItem(self.auto_adjust_roi)
+        self.auto_adjust_roi = None
+        self.auto_adjust_button.setIcon(QIcon(":icons/icons/zap.svg"))
+        self.auto_adjust_button.setToolTip("Ajustar parâmetros da câmera automaticamente")
+
+        self.was_live_before_adjust = self.isLive
+        if self.isLive:
+            self.stop_live()
+
+        self.progress_dialog = QProgressDialog("Ajustando câmera...", "Cancelar", 0, 100, self)
+        self.progress_dialog.setWindowModality(Qt.WindowModal)
+        self.progress_dialog.setAutoClose(True)
+        self.progress_dialog.show()
+
+        self.thread = QThread()
+        self.worker = AutoAdjustWorker(device_path, roi_rect)
+        self.worker.moveToThread(self.thread)
+
+        self.worker.progress.connect(self.update_progress)
+        self.worker.finished.connect(self.on_auto_adjust_finished)
+        self.thread.started.connect(self.worker.run)
+        
+        # Cleanup
+        self.worker.finished.connect(self.thread.quit)
+        self.worker.finished.connect(self.worker.deleteLater)
+        self.thread.finished.connect(self.thread.deleteLater)
+
+        self.thread.start()
+
+    @Slot(str, int)
+    def update_progress(self, message, value):
+        if hasattr(self, 'progress_dialog'):
+            self.progress_dialog.setLabelText(message)
+            self.progress_dialog.setValue(value)
+
+    @Slot(dict)
+    def on_auto_adjust_finished(self, result):
+        if hasattr(self, 'progress_dialog'):
+            self.progress_dialog.close()
+
+        if 'error' in result:
+            QMessageBox.critical(self, "Erro no Auto Ajuste", result['error'])
+            return
+
+        focus = result.get('focus')
+        exposure = result.get('exposure')
+
+        msg_box = QMessageBox()
+        msg_box.setIcon(QMessageBox.Information)
+        msg_box.setText("Auto ajuste concluído!")
+        msg_box.setInformativeText(f"Valores ótimos encontrados:\n\nFoco: {focus}\nExposição: {exposure}\n\nDeseja salvar estes valores no arquivo config_ini.py?")
+        msg_box.setStandardButtons(QMessageBox.Save | QMessageBox.Apply | QMessageBox.Cancel)
+        msg_box.setDefaultButton(QMessageBox.Save)
+        ret = msg_box.exec()
+
+        if ret == QMessageBox.Save or ret == QMessageBox.Apply:
+            try:
+                # self.camera_usb_index is already the correct configuration index
+                config_idx = self.camera_usb_index
+                
+                # Atualizar os valores em memória (para a sessão atual)
+                if focus != "Não Suportado":
+                    config_ini.cam_focus[config_idx] = focus
+                    config_ini.cam_auto_focus[config_idx] = 0
+                if exposure != "Não Suportado":
+                    config_ini.cam_exposure[config_idx] = exposure
+                    config_ini.cam_auto_exposure[config_idx] = 0
+
+                if ret == QMessageBox.Save:
+                    # Salvar no arquivo
+                    save_focus = focus if focus != "Não Suportado" else config_ini.cam_focus[config_idx]
+                    save_exp = exposure if exposure != "Não Suportado" else config_ini.cam_exposure[config_idx]
+                    update_config_file(config_idx, save_focus, save_exp)
+                    QMessageBox.information(self, "Salvo", "Configurações salvas em config_ini.py.")
+
+                # Reaplicar as configurações na câmera para garantir e mostrar o resultado
+                if getattr(self, 'was_live_before_adjust', False):
+                    self.start_live()
+                else:
+                    self.capture_single_frame()
+            except (ValueError, IndexError) as e:
+                QMessageBox.critical(self, "Erro", f"Não foi possível encontrar o índice da câmera no config_ini.py: {e}")
 
     def take_picture(self):
         """Captures the current frame and saves it to a file."""
@@ -217,29 +441,78 @@ class CameraView(QtWidgets.QWidget):
             # If not live, open camera, grab a single frame, and close
             self.capture_single_frame()
 
+    def resolve_camera_index(self):
+        """Resolves the configured camera index to the actual system device index."""
+        try:
+            # self.camera_usb_index is now the index for the config lists (0, 1, ...)
+            return config_ini.cam_usb_index[self.camera_usb_index]
+        except IndexError:
+            QMessageBox.warning(
+                self, "Erro de Configuração",
+                f"Índice de câmera {self.camera_usb_index} está fora dos limites para 'cam_usb_index' no config_ini.py."
+            )
+            return self.camera_usb_index
+
     def capture_single_frame(self):
         """Opens the camera, captures a single frame, and displays it."""
+        real_index = self.resolve_camera_index()
         # If not live, open camera, grab a single frame, and close
-        cap = cv2.VideoCapture(self.camera_usb_index)
+        
+        cap = cv2.VideoCapture(real_index, cv2.CAP_V4L2)
         if not cap.isOpened():
-            QtWidgets.QMessageBox.warning(self, "Camera Error", "Could not open camera.")
+            cap = cv2.VideoCapture(real_index)
+        if not cap.isOpened():
+            # List available cameras to help debugging
+            cameras = QMediaDevices.videoInputs()
+            cam_list = "\n".join([f"- {cam.description()} ({cam.id().data().decode()})" for cam in cameras])
+            QtWidgets.QMessageBox.warning(
+                self, 
+                "Camera Error", 
+                f"Could not open camera index {real_index} (Config: {self.camera_usb_index}).\n\nAvailable cameras:\n{cam_list}"
+            )
             return
         
-        self._apply_camera_settings(cap, self.camera_usb_index)
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        cap.set(cv2.CAP_PROP_FPS, 15)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         
-        # Allow the camera to warm up and adjust exposure
-        for _ in range(10):
+        # Aplica as configurações COM o stream ativo para não serem sobrescritas
+        self._apply_camera_settings(cap, real_index)
+
+        # Descarta os quadros escuros e dá tempo ao sensor para estabilizar a luz
+        for _ in range(15):
             cap.read()
 
-        # Re-apply settings after warm-up to ensure they stick
-        self._apply_camera_settings(cap, self.camera_usb_index)
+        try:
+            config_idx = self.camera_usb_index
 
-        ret, frame = cap.read()
-        cap.release()
-        if ret:
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            captured_frame = cv2.flip(rgb_frame, 1)
-            self.setImage(captured_frame) # Update the view
+            ret, frame = cap.read()
+            cap.release()
+            if ret:
+                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                
+                if config_idx < len(config_ini.cam_usb_flip) and config_ini.cam_usb_flip[config_idx] == 1:
+                    captured_frame = cv2.flip(rgb_frame, 1)
+                else:
+                    captured_frame = rgb_frame
+                    
+                # Aplicar tratamento de imagem via software
+                try:
+                    contrast = config_ini.cam_sw_contrast[config_idx] if config_idx < len(config_ini.cam_sw_contrast) else 1.0
+                    brightness = config_ini.cam_sw_brightness[config_idx] if config_idx < len(config_ini.cam_sw_brightness) else 0
+                    sharpen = config_ini.cam_sw_sharpen[config_idx] if config_idx < len(config_ini.cam_sw_sharpen) else 0.0
+                    
+                    vision_lib = pv_visionlib.pvVisionLib()
+                    captured_frame = vision_lib.enhance_image(captured_frame, contrast, brightness, sharpen)
+                except AttributeError:
+                    pass # Caso os parametros ainda não existam no config_ini
+                    
+                self.setImage(captured_frame) # Update the view
+        except (IndexError, TypeError):
+             QMessageBox.warning(self, "Erro de Configuração", f"Índice de câmera {self.camera_usb_index} inválido em config_ini.py.")
+             cap.release()
 
     def save_picture(self):
         """Saves the currently displayed image to a file."""
@@ -724,21 +997,31 @@ class CameraView(QtWidgets.QWidget):
     def load_image_path(self, file_path):
         """Loads an image from a file using OpenCV and displays it."""
         try:
+            if not file_path:
+                print("Aviso: Nenhum caminho de imagem fornecido. Usando imagem em branco.")
+                blank_image = np.zeros((480, 640, 3), dtype=np.uint8)
+                self.actual_image = blank_image
+                return blank_image
+                
             # Load image using OpenCV
             # OpenCV loads images as BGR, so we convert to RGB
             image = cv2.imread(file_path)
             if image is None:
-                raise ValueError(f"Failed to read image: {file_path}. File may be corrupted or in an unsupported format.")
-            
-            # Convert BGR to RGB
-            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                print(f"Aviso: Falha ao ler a imagem: {file_path}. Arquivo inexistente ou formato não suportado.")
+                image = np.zeros((480, 640, 3), dtype=np.uint8)
+            else:
+                # Convert BGR to RGB
+                image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                
             self.actual_image = image
             return image
         
         except Exception as e:
             error_msg = f"Error loading image '{file_path}': {str(e)}"
             print(error_msg)
-            raise Exception(error_msg)
+            blank_image = np.zeros((480, 640, 3), dtype=np.uint8)
+            self.actual_image = blank_image
+            return blank_image
 
 
 
@@ -746,7 +1029,7 @@ class CameraView(QtWidgets.QWidget):
         if not self.isLive:
             self.isLive = True
             self.th = Thread(self)
-            self.th.index = self.camera_usb_index
+            self.th.index = self.resolve_camera_index()
             #self.th.finished.connect(self.close)
             self.th.updateFrame.connect(self.setImage)
             self.runWebCam(self.camera_usb_index)
@@ -1068,6 +1351,148 @@ class CameraView(QtWidgets.QWidget):
             except Exception as e2:
                 print(f"[ROI] ✗ CRITICAL ERROR in error recovery: {e2}")
 
+class AutoAdjustWorker(QObject):
+    finished = Signal(dict)
+    progress = Signal(str, int)
+
+    def __init__(self, device_path, roi_rect=None, parent=None):
+        super().__init__(parent)
+        self.device_path = device_path
+        self.roi_rect = roi_rect
+
+    def _run_v4l2_ctl(self, *args, silent=False):
+        import subprocess
+        cmd = ['v4l2-ctl', '-d', self.device_path] + list(args)
+        try:
+            return subprocess.check_output(cmd, stderr=subprocess.STDOUT, text=True)
+        except subprocess.CalledProcessError as e:
+            if not silent:
+                print(f"Erro ao executar v4l2-ctl: {e.output.strip()}")
+            return None
+        except FileNotFoundError:
+            if not silent:
+                print("v4l2-ctl não encontrado. Instale v4l-utils.")
+            return None
+
+    def _calculate_sharpness(self, image):
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        return cv2.Laplacian(gray, cv2.CV_64F).var()
+
+    @Slot()
+    def run(self):
+        self.progress.emit("Desabilitando controles automáticos...", 10)
+        self._run_v4l2_ctl('-c', 'focus_auto=0', silent=True)
+        self._run_v4l2_ctl('-c', 'exposure_auto=1', silent=True) # 1 = Manual
+        self._run_v4l2_ctl('-c', 'white_balance_temperature_auto=0', silent=True)
+        QThread.msleep(200)
+        
+        cap = cv2.VideoCapture(self.device_path, cv2.CAP_V4L2)
+        if not cap.isOpened():
+            cap = cv2.VideoCapture(self.device_path)
+            
+        if not cap.isOpened():
+            self.finished.emit({'error': 'Não foi possível abrir a câmera.'})
+            return
+
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        cap.set(cv2.CAP_PROP_FPS, 15)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        
+        # Aquecimento inicial da câmera
+        for _ in range(10): cap.read()
+
+        self.progress.emit("Ajustando exposição...", 10)
+        best_exposure = -1
+        min_diff = float('inf')
+        target_brightness = 110 # Alvo levemente mais escuro para evitar estouro de luz no metal
+        
+        # Degraus logarítmicos e abrangentes de luz
+        exposures = [10, 30, 50, 80, 120, 160, 200, 250, 312, 400, 500, 625, 800, 1000, 1250, 1500, 2000, 2500, 5000]
+        
+        exposure_supported = self._run_v4l2_ctl('-c', f'exposure_absolute={exposures[0]}', silent=True) is not None
+        
+        if exposure_supported:
+            for idx, exposure in enumerate(exposures):
+                self._run_v4l2_ctl('-c', f'exposure_absolute={exposure}', silent=True)
+                QThread.msleep(150) # Tempo para o sensor ajustar fisicamente a luz
+                for _ in range(3): cap.read() # Limpa quadros velhos do buffer
+                ret, frame = cap.read()
+                if not ret or frame is None: continue
+
+                eval_frame = frame
+                if self.roi_rect:
+                    x, y, w, h = self.roi_rect
+                    img_h, img_w = frame.shape[:2]
+                    x1, y1 = max(0, x), max(0, y)
+                    x2, y2 = min(img_w, x + w), min(img_h, y + h)
+                    if x2 > x1 and y2 > y1:
+                        eval_frame = frame[y1:y2, x1:x2]
+
+                mean_brightness = np.mean(cv2.cvtColor(eval_frame, cv2.COLOR_BGR2GRAY))
+                if abs(mean_brightness - target_brightness) < min_diff:
+                    min_diff = abs(mean_brightness - target_brightness)
+                    best_exposure = exposure
+                
+                progress_percent = 10 + int((idx / len(exposures)) * 40)
+                self.progress.emit(f"Ajustando exposição... (Luz: {int(mean_brightness)}/110)", progress_percent)
+
+            if best_exposure != -1:
+                self._run_v4l2_ctl('-c', f'exposure_absolute={best_exposure}', silent=True)
+                QThread.msleep(200)
+                for _ in range(5): cap.read()
+            else:
+                self.finished.emit({'error': 'Falha ao ajustar a exposição.'})
+                cap.release()
+                return
+        else:
+            best_exposure = "Não Suportado"
+            self.progress.emit("Exposição manual não suportada, pulando...", 50)
+            QThread.msleep(500)
+
+        self.progress.emit("Ajustando foco...", 50)
+        best_focus = -1
+        max_sharpness = -1
+        focus_steps = list(range(0, 256, 15))
+        
+        focus_supported = self._run_v4l2_ctl('-c', f'focus_absolute={focus_steps[0]}', silent=True) is not None
+
+        if focus_supported:
+            for idx, focus in enumerate(focus_steps):
+                self._run_v4l2_ctl('-c', f'focus_absolute={focus}', silent=True)
+                QThread.msleep(150) # Tempo para a lente física se mover
+                for _ in range(3): cap.read()
+                ret, frame = cap.read()
+                if not ret or frame is None: continue
+                
+                eval_frame = frame
+                if self.roi_rect:
+                    x, y, w, h = self.roi_rect
+                    img_h, img_w = frame.shape[:2]
+                    x1, y1 = max(0, x), max(0, y)
+                    x2, y2 = min(img_w, x + w), min(img_h, y + h)
+                    if x2 > x1 and y2 > y1:
+                        eval_frame = frame[y1:y2, x1:x2]
+                        
+                sharpness = self._calculate_sharpness(eval_frame)
+                if sharpness > max_sharpness:
+                    max_sharpness = sharpness
+                    best_focus = focus
+                
+                progress_percent = 50 + int((idx / len(focus_steps)) * 40)
+                self.progress.emit(f"Ajustando foco... (Nitidez: {int(sharpness)})", progress_percent)
+
+            if best_focus != -1:
+                self._run_v4l2_ctl('-c', f'focus_absolute={best_focus}', silent=True)
+        else:
+            best_focus = "Não Suportado"
+            self.progress.emit("Foco manual não suportado, pulando...", 90)
+            QThread.msleep(500)
+
+        cap.release()
+        self.progress.emit("Ajuste concluído!", 100)
+        self.finished.emit({'focus': best_focus, 'exposure': best_exposure})
 
 class Thread(QThread):
     updateFrame = Signal(np.ndarray)
@@ -1083,14 +1508,17 @@ class Thread(QThread):
         
 
     def run(self):
+        if self.parent() and hasattr(self.parent(), '_apply_camera_settings'):
+            self.parent()._apply_camera_settings(None, self.index)
+
         self.cap = cv2.VideoCapture(self.index)
         
-        # Allow the camera to warm up before applying settings
-        for _ in range(10):
-            self.cap.read()
-
-        # Apply manual settings from config
-        self.parent()._apply_camera_settings(self.cap, self.index)
+        if self.cap.isOpened():
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+            
+            for _ in range(5):
+                self.cap.read()
     
         
         while self.status:
@@ -1099,11 +1527,34 @@ class Thread(QThread):
                 continue
 
             # Reading the frame, converting it to RGB, and flipping it for correct orientation
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            flipped_frame = cv2.flip(rgb_frame, 1)
+            try:
+                config_idx = self.parent().camera_usb_index
 
-            # Emit signal
-            self.updateFrame.emit(flipped_frame)
+                # Reading the frame, converting it to RGB
+                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                
+                if config_idx < len(config_ini.cam_usb_flip) and config_ini.cam_usb_flip[config_idx] == 1:
+                    final_frame = cv2.flip(rgb_frame, 1)
+                else:
+                    final_frame = rgb_frame
+
+                # Aplicar tratamento de imagem via software
+                try:
+                    contrast = config_ini.cam_sw_contrast[config_idx] if config_idx < len(config_ini.cam_sw_contrast) else 1.0
+                    brightness = config_ini.cam_sw_brightness[config_idx] if config_idx < len(config_ini.cam_sw_brightness) else 0
+                    sharpen = config_ini.cam_sw_sharpen[config_idx] if config_idx < len(config_ini.cam_sw_sharpen) else 0.0
+                    
+                    vision_lib = pv_visionlib.pvVisionLib()
+                    final_frame = vision_lib.enhance_image(final_frame, contrast, brightness, sharpen)
+                except AttributeError:
+                    pass
+
+                # Emit signal
+                self.updateFrame.emit(final_frame)
+            except (IndexError, TypeError):
+                # This can happen if config is changed while running. Stop the thread.
+                print(f"Erro de configuração no thread da câmera, parando. Índice: {self.parent().camera_usb_index}")
+                self.status = False
         self.cap.release()
         self.cap = None
         #sys.exit(-1)

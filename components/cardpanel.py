@@ -172,13 +172,14 @@ class ImageSegmentationView(QFrame):
         
 
         camA_radio = QRadioButton("Camera A")
+        camA_radio.setChecked(True)
         self.camB_radio = QRadioButton("Camera B")
         cam_select = QHBoxLayout()
         
         cam_select.addWidget(camA_radio)
         cam_select.addWidget(self.camB_radio)
 
-        # layout.addLayout(cam_select)
+        layout.addLayout(cam_select)
         
         self.image_filtered = QLabel()
         self.image_filtered.setMinimumHeight(200)
@@ -186,7 +187,6 @@ class ImageSegmentationView(QFrame):
         self.image_filtered.setScaledContents(True)
         image_buttons = QHBoxLayout()
         image_buttons.addWidget(self.image_filtered)
-        image_buttons.addLayout(image_buttons)
 
         buttons = QVBoxLayout()
         test_button = QPushButton("Segmentação")

@@ -93,7 +93,9 @@ class ProgramView(QtWidgets.QWidget):
         #layout_cams = QtWidgets.QVBoxLayout()
         for i in range(qty):
             # Let layout handle geometry
-            self.cameras.append(CameraView( config_ini.cam_usb_index[i] ))
+            if i >= len(config_ini.cam_usb_index):
+                break
+            self.cameras.append(CameraView(i))
             self.cameras[-1].setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
             self.area_work.addWidget(self.cameras[-1], 0, i)
 

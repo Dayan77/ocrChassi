@@ -1,6 +1,7 @@
 import sys
 import os
 import json
+import re
 from datetime import datetime
 from PySide6.QtWidgets import (
     QApplication,
@@ -15,8 +16,10 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QFileDialog,
+    QMessageBox,
 )
 from PySide6.QtGui import QPixmap, QFont, QImage
+from PySide6.QtMultimedia import QMediaDevices
 from PySide6.QtCore import Qt, QTimer, QThread, Signal, QObject
 import cv2
 import numpy as np
@@ -181,24 +184,126 @@ class CameraCaptureThread(QThread):
         self.usb_index = usb_index
         self.running = False
 
+    def _apply_camera_settings(self, cap):
+        try:
+            import importlib
+            import time
+            try:
+                importlib.reload(config_ini) # Atualiza as vars com base no arquivo em tempo real
+            except Exception as e:
+                print(f"Aviso: Falha ao recarregar config_ini.py: {e}")
+
+            config_idx = self.cam_index
+            if config_idx >= len(config_ini.cam_auto_exposure):
+                config_idx = 0
+
+            if cap and cap.isOpened():
+                auto_exp = 3 if config_ini.cam_auto_exposure[config_idx] else 1
+                cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, auto_exp)
+                if not config_ini.cam_auto_exposure[config_idx]:
+                    cap.set(cv2.CAP_PROP_EXPOSURE, config_ini.cam_exposure[config_idx])
+                
+                cap.set(cv2.CAP_PROP_AUTO_WB, config_ini.cam_auto_wb[config_idx])
+                if not config_ini.cam_auto_wb[config_idx]:
+                    cap.set(cv2.CAP_PROP_WB_TEMPERATURE, config_ini.cam_wb_temperature[config_idx])
+                    
+                cap.set(cv2.CAP_PROP_AUTOFOCUS, config_ini.cam_auto_focus[config_idx])
+                if not config_ini.cam_auto_focus[config_idx]:
+                    cap.set(cv2.CAP_PROP_FOCUS, config_ini.cam_focus[config_idx])
+
+            if isinstance(self.usb_index, str) and self.usb_index.startswith("/dev/video"):
+                import subprocess
+                auto_exp = 3 if config_ini.cam_auto_exposure[config_idx] else 1
+                try:
+                    subprocess.run(['v4l2-ctl', '-d', self.usb_index, '-c', f'exposure_auto={auto_exp}'], stderr=subprocess.DEVNULL)
+                    if not config_ini.cam_auto_exposure[config_idx]:
+                        subprocess.run(['v4l2-ctl', '-d', self.usb_index, '-c', f'exposure_absolute={config_ini.cam_exposure[config_idx]}'], stderr=subprocess.DEVNULL)
+                        subprocess.run(['v4l2-ctl', '-d', self.usb_index, '-c', 'exposure_auto_priority=0'], stderr=subprocess.DEVNULL)
+                        subprocess.run(['v4l2-ctl', '-d', self.usb_index, '-c', 'gain_auto=0'], stderr=subprocess.DEVNULL)
+                        subprocess.run(['v4l2-ctl', '-d', self.usb_index, '-c', 'autogain=0'], stderr=subprocess.DEVNULL)
+                    
+                    wb_auto = config_ini.cam_auto_wb[config_idx]
+                    subprocess.run(['v4l2-ctl', '-d', self.usb_index, '-c', f'white_balance_temperature_auto={wb_auto}'], stderr=subprocess.DEVNULL)
+                    if not wb_auto:
+                        subprocess.run(['v4l2-ctl', '-d', self.usb_index, '-c', f'white_balance_temperature={config_ini.cam_wb_temperature[config_idx]}'], stderr=subprocess.DEVNULL)
+                        
+                    focus_auto = config_ini.cam_auto_focus[config_idx]
+                    subprocess.run(['v4l2-ctl', '-d', self.usb_index, '-c', f'focus_auto={focus_auto}'], stderr=subprocess.DEVNULL)
+                    if not focus_auto:
+                        subprocess.run(['v4l2-ctl', '-d', self.usb_index, '-c', f'focus_absolute={config_ini.cam_focus[config_idx]}'], stderr=subprocess.DEVNULL)
+                
+                    time.sleep(0.5) # Aguarda a lente/sensor da câmera aplicar as configurações físicas
+                except Exception as e:
+                    print(f"Aviso: Não foi possível aplicar configurações via v4l2-ctl: {e}")
+        except Exception as e:
+            print(f"Erro ao aplicar configurações da câmera {self.cam_index}: {e}")
+
     def run(self):
         self.running = True
-        cap = cv2.VideoCapture(self.usb_index)
+
+        cap = cv2.VideoCapture(self.usb_index, cv2.CAP_V4L2)
+        if not cap.isOpened():
+            cap = cv2.VideoCapture(self.usb_index)
+            
         if cap.isOpened():
+            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+            cap.set(cv2.CAP_PROP_FPS, 15)
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                
+            self._apply_camera_settings(cap)
+            for _ in range(15):
+                cap.read()
         
         while self.running:
             if cap.isOpened():
                 ret, frame = cap.read()
                 if ret:
+                    # Aplicar tratamento de imagem via software
+                    try:
+                        import config_ini
+                        config_idx = self.cam_index if self.cam_index < len(getattr(config_ini, 'cam_sw_contrast', [1.0])) else 0
+                        contrast = getattr(config_ini, 'cam_sw_contrast', [1.0, 1.0])[config_idx]
+                        brightness = getattr(config_ini, 'cam_sw_brightness', [0, 0])[config_idx]
+                        sharpen = getattr(config_ini, 'cam_sw_sharpen', [0.0, 0.0])[config_idx]
+                        
+                        if contrast != 1.0 or brightness != 0:
+                            frame = cv2.convertScaleAbs(frame, alpha=contrast, beta=brightness)
+                        if sharpen > 0.0:
+                            blur = cv2.GaussianBlur(frame, (0, 0), 3)
+                            frame = cv2.addWeighted(frame, 1.0 + sharpen, blur, -sharpen, 0)
+                    except Exception as e:
+                        pass
+                        
                     self.frame_captured.emit(self.cam_index, frame)
                 else:
                     cap.release()
                     QThread.msleep(200)
-                    cap = cv2.VideoCapture(self.usb_index)
+                    cap = cv2.VideoCapture(self.usb_index, cv2.CAP_V4L2)
+                    if not cap.isOpened():
+                        cap = cv2.VideoCapture(self.usb_index)
+                    if cap.isOpened():
+                        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
+                        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+                        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+                        cap.set(cv2.CAP_PROP_FPS, 15)
+                        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                        self._apply_camera_settings(cap)
+                        for _ in range(15): cap.read()
             else:
                 QThread.msleep(500)
-                cap = cv2.VideoCapture(self.usb_index)
+                cap = cv2.VideoCapture(self.usb_index, cv2.CAP_V4L2)
+                if not cap.isOpened():
+                    cap = cv2.VideoCapture(self.usb_index)
+                if cap.isOpened():
+                    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+                    cap.set(cv2.CAP_PROP_FPS, 15)
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    self._apply_camera_settings(cap)
+                    for _ in range(15): cap.read()
         
         if cap.isOpened():
             cap.release()
@@ -495,8 +600,15 @@ class InspectionView(QWidget):
         self.close_cameras()
         self.camera_threads = []
         self.latest_frames = {}
+        
         for i in range(config_ini.cam_qty):
-            thread = CameraCaptureThread(i, config_ini.cam_usb_index[i])
+            if i >= len(config_ini.cam_usb_index):
+                break
+            
+            # Passa a string exata do dispositivo ou o número diretamente para o OpenCV
+            usb_index = config_ini.cam_usb_index[i]
+
+            thread = CameraCaptureThread(i, usb_index)
             thread.frame_captured.connect(self.on_frame_captured)
             thread.start()
             self.camera_threads.append(thread)
@@ -528,9 +640,7 @@ class InspectionView(QWidget):
             thread.stop()
         
         for thread in self.camera_threads:
-            if not thread.wait(2000):
-                thread.terminate()
-                thread.wait()
+            thread.wait(3000)
             thread.deleteLater()
         self.camera_threads = []
 
@@ -699,7 +809,12 @@ class InspectionView(QWidget):
                 self.update_camera_view(self.cam2_view, pixmap)
 
         if not frames_with_source:
-            print("Não foi possível capturar imagens das câmeras.")
+            if not self.inspection_timer.isActive():
+                cameras = QMediaDevices.videoInputs()
+                cam_list = "\n".join([f"- {cam.description()} ({cam.id().data().decode()})" for cam in cameras])
+                QMessageBox.warning(self, "Camera Error", f"Não foi possível capturar imagens das câmeras.\n\nAvailable cameras:\n{cam_list}")
+            else:
+                print("Não foi possível capturar imagens das câmeras.")
             return
         
         self.run_inference_on_frames(frames_with_source)

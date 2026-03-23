@@ -443,7 +443,12 @@ def train_model_pytorch(model_data, progress_callback, log_callback):
     base_name, _ = os.path.splitext(model_data.encoder_filename)
     save_path = base_name + ".pth"
     torch.save(model.state_dict(), save_path)
-    final_stats = {"final_accuracy": epoch_acc, "final_loss": running_loss/len(train_loader)}
+    final_stats = {
+        "final_accuracy": epoch_acc,
+        "final_loss": running_loss / len(train_loader) if len(train_loader) > 0 else 0.0,
+        "final_val_accuracy": 0.0,
+        "final_val_loss": 0.0
+    }
     log_callback(f"\n--- Training Finished. Model saved to: {save_path} ---")
     
     return final_stats, class_names

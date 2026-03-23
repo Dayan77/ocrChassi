@@ -9,16 +9,23 @@ app_company_logo = ""
 
 
 #----- Cameras ------#
-cam_qty = 2
-cam_usb_index = [ 1, 0]
-cam_usb_color = [ 1, 1]
-cam_usb_flip = [ 1, 1]
-cam_auto_exposure = [ 0, 0] # 1 for auto, 0 for manual
-cam_exposure = [ -16, -6]    # Manual exposure value
-cam_auto_wb = [ 0, 0]       # 1 for auto, 0 for manual
-cam_wb_temperature = [ 4000, 4000] # Manual white balance
-cam_auto_focus = [ 0, 0]    # 1 for auto, 0 for manual
-cam_focus = [ 255, 0]         # Manual focus value (0-255)
+cam_qty = 2                         # Quantidade de câmeras ativas
+cam_usb_index = [ "/dev/video0", "/dev/video2"] # Índices ou caminhos dos dispositivos (ex: 0, 1, ou "/dev/video0")
+cam_usb_color = [ 0, 0]             # 1 para RGB/Colorido, 0 para Tons de cinza (Grayscale)
+cam_usb_flip = [ 1, 1]              # 1 para inverter a imagem horizontalmente, 0 para manter normal
+
+cam_auto_exposure = [1, 1]
+cam_exposure = [500, 475]
+cam_auto_wb = [ 0, 0]               # Balanço de Branco: 1 para Automático, 0 para Manual
+cam_wb_temperature = [ 4000, 4000]  # Temperatura de cor manual em Kelvin (Ex: 2800 para cores quentes, 6500 para cores frias)
+cam_auto_focus = [0, 0]
+cam_focus = [300, 300]
+
+#----- Software Image Processing -----#
+# Tratamento da imagem via software após a captura
+cam_sw_contrast = [1.0, 1.0]        # 1.0 = original, > 1.0 aumenta o contraste
+cam_sw_brightness = [0, 0]          # 0 = original, > 0 mais claro, < 0 mais escuro
+cam_sw_sharpen = [0.0, 0.0]         # 0.0 = original, > 0.0 aplica filtro de nitidez (ex: 1.0 a 3.0)
 
 cam_files_path = "/Users/dayansantos/Dev/ocrChassi/models/sense_chassi_19022026"
 default_roi_x = 50
