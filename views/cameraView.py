@@ -35,13 +35,13 @@ import numpy as np
 
 import pv_visionlib
 import pyqtgraph as pg
-from PySide6.QtWidgets import QProgressDialog, QMessageBox
+from PySide6.QtWidgets import QProgressDialog, QMessageBox, QDialog, QSlider, QCheckBox, QVBoxLayout, QHBoxLayout, QLabel, QGroupBox, QApplication, QPushButton
 
 
 import icons_rc, images_rc, config_ini
 color_bg="#b1b5b99f"
 
-def update_config_file(cam_config_index, new_focus, new_exposure):
+def update_config_file(cam_config_index, auto_focus, focus, auto_exp, exposure):
     """
     ATENÇÃO: Esta função modifica diretamente o arquivo config_ini.py.
     É uma abordagem frágil, mas funciona para o propósito atual.
@@ -67,17 +67,158 @@ def update_config_file(cam_config_index, new_focus, new_exposure):
 
         with open(config_path, 'w') as f:
             for line in lines:
-                line = update_list_value(line, 'cam_focus', cam_config_index, new_focus)
-                line = update_list_value(line, 'cam_exposure', cam_config_index, new_exposure)
+                if focus != "Não Suportado":
+                    line = update_list_value(line, 'cam_focus', cam_config_index, focus)
+                if exposure != "Não Suportado":
+                    line = update_list_value(line, 'cam_exposure', cam_config_index, exposure)
                 
-                # Desabilitar o modo automático se os valores foram ajustados
-                if new_focus != "Não Suportado":
-                    line = update_list_value(line, 'cam_auto_focus', cam_config_index, 0)
-                if new_exposure != "Não Suportado":
-                    line = update_list_value(line, 'cam_auto_exposure', cam_config_index, 0)
+                line = update_list_value(line, 'cam_auto_focus', cam_config_index, auto_focus)
+                line = update_list_value(line, 'cam_auto_exposure', cam_config_index, auto_exp)
                 f.write(line)
     except Exception as e:
         print(f"Erro ao atualizar o arquivo de configuração: {e}")
+
+class CameraSettingsDialog(QDialog):
+    def __init__(self, device_path, current_config_idx, parent=None):
+        super().__init__(parent)
+        self.device_path = device_path
+        self.config_idx = current_config_idx
+        self.setWindowTitle("Configurações da Câmera (Manual)")
+        self.setMinimumWidth(400)
+        
+        self.exposure_info = self._get_ctrl_info('exposure_absolute', 3, 5000, 250)
+        self.focus_info = self._get_ctrl_info('focus_absolute', 0, 250, 0)
+        
+        self.init_ui()
+        
+    def _get_ctrl_info(self, ctrl_name, default_min, default_max, default_val):
+        info = {'min': default_min, 'max': default_max, 'val': default_val}
+        try:
+            import subprocess
+            out = subprocess.check_output(['v4l2-ctl', '-d', self.device_path, '-l'], text=True)
+            for line in out.split('\n'):
+                if ctrl_name in line:
+                    import re
+                    m_min = re.search(r'min=(\d+)', line)
+                    m_max = re.search(r'max=(\d+)', line)
+                    m_val = re.search(r'value=(\d+)', line)
+                    if m_min: info['min'] = int(m_min.group(1))
+                    if m_max: info['max'] = int(m_max.group(1))
+                    if m_val: info['val'] = int(m_val.group(1))
+                    break
+        except Exception:
+            pass
+        return info
+        
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+        import config_ini
+        
+        # --- Exposição ---
+        gb_exp = QGroupBox("Exposição (Luz)")
+        exp_layout = QVBoxLayout(gb_exp)
+        
+        self.chk_auto_exp = QCheckBox("Automático")
+        self.sl_exposure = QSlider(Qt.Orientation.Horizontal)
+        self.sl_exposure.setRange(self.exposure_info['min'], self.exposure_info['max'])
+        
+        is_auto_exp = config_ini.cam_auto_exposure[self.config_idx] == 1
+        curr_exp = config_ini.cam_exposure[self.config_idx]
+        if curr_exp == "Não Suportado": curr_exp = self.exposure_info['val']
+        
+        self.lbl_exp_val = QLabel(f"Valor: {curr_exp}")
+        
+        self.chk_auto_exp.setChecked(is_auto_exp)
+        self.sl_exposure.setValue(int(curr_exp))
+        self.sl_exposure.setEnabled(not is_auto_exp)
+        
+        self.chk_auto_exp.stateChanged.connect(self._on_auto_exp_changed)
+        self.sl_exposure.valueChanged.connect(lambda v: self.lbl_exp_val.setText(f"Valor: {v}"))
+        self.sl_exposure.sliderReleased.connect(self._apply_exposure)
+        
+        exp_layout.addWidget(self.chk_auto_exp)
+        exp_layout.addWidget(self.lbl_exp_val)
+        exp_layout.addWidget(self.sl_exposure)
+        layout.addWidget(gb_exp)
+        
+        # --- Foco ---
+        gb_foc = QGroupBox("Foco (Nitidez)")
+        foc_layout = QVBoxLayout(gb_foc)
+        
+        self.chk_auto_foc = QCheckBox("Automático")
+        self.sl_focus = QSlider(Qt.Orientation.Horizontal)
+        self.sl_focus.setRange(self.focus_info['min'], self.focus_info['max'])
+        
+        is_auto_foc = config_ini.cam_auto_focus[self.config_idx] == 1
+        curr_foc = config_ini.cam_focus[self.config_idx]
+        if curr_foc == "Não Suportado": curr_foc = self.focus_info['val']
+        
+        self.lbl_foc_val = QLabel(f"Valor: {curr_foc}")
+        
+        self.chk_auto_foc.setChecked(is_auto_foc)
+        self.sl_focus.setValue(int(curr_foc))
+        self.sl_focus.setEnabled(not is_auto_foc)
+        
+        self.chk_auto_foc.stateChanged.connect(self._on_auto_foc_changed)
+        self.sl_focus.valueChanged.connect(lambda v: self.lbl_foc_val.setText(f"Valor: {v}"))
+        self.sl_focus.sliderReleased.connect(self._apply_focus)
+        
+        foc_layout.addWidget(self.chk_auto_foc)
+        foc_layout.addWidget(self.lbl_foc_val)
+        foc_layout.addWidget(self.sl_focus)
+        layout.addWidget(gb_foc)
+        
+        # --- Botoes ---
+        btn_layout = QHBoxLayout()
+        self.btn_auto_smart = QPushButton("Auto Ajuste (Smart ROI)")
+        self.btn_auto_smart.clicked.connect(self.accept_as_smart_auto)
+        self.btn_auto_smart.setStyleSheet("background-color: #89b4fa; color: #11111b; font-weight: bold;")
+        
+        self.btn_save = QPushButton("Salvar Manual")
+        self.btn_save.clicked.connect(self.accept)
+        self.btn_save.setStyleSheet("background-color: #a6e3a1; color: #11111b; font-weight: bold;")
+        
+        self.btn_cancel = QPushButton("Cancelar")
+        self.btn_cancel.clicked.connect(self.reject)
+        
+        btn_layout.addWidget(self.btn_auto_smart)
+        btn_layout.addStretch()
+        btn_layout.addWidget(self.btn_cancel)
+        btn_layout.addWidget(self.btn_save)
+        
+        layout.addLayout(btn_layout)
+
+    def _on_auto_exp_changed(self, state):
+        is_auto = (state == 2)
+        self.sl_exposure.setEnabled(not is_auto)
+        import subprocess
+        auto_val = 3 if is_auto else 1
+        subprocess.run(['v4l2-ctl', '-d', self.device_path, '-c', f'exposure_auto={auto_val}'], stderr=subprocess.DEVNULL)
+        if not is_auto:
+            self._apply_exposure()
+            
+    def _on_auto_foc_changed(self, state):
+        is_auto = (state == 2)
+        self.sl_focus.setEnabled(not is_auto)
+        import subprocess
+        auto_val = 1 if is_auto else 0
+        subprocess.run(['v4l2-ctl', '-d', self.device_path, '-c', f'focus_auto={auto_val}'], stderr=subprocess.DEVNULL)
+        if not is_auto:
+            self._apply_focus()
+            
+    def _apply_exposure(self):
+        val = self.sl_exposure.value()
+        import subprocess
+        subprocess.run(['v4l2-ctl', '-d', self.device_path, '-c', f'exposure_absolute={val}'], stderr=subprocess.DEVNULL)
+        subprocess.run(['v4l2-ctl', '-d', self.device_path, '-c', 'exposure_auto_priority=0'], stderr=subprocess.DEVNULL)
+        
+    def _apply_focus(self):
+        val = self.sl_focus.value()
+        import subprocess
+        subprocess.run(['v4l2-ctl', '-d', self.device_path, '-c', f'focus_absolute={val}'], stderr=subprocess.DEVNULL)
+        
+    def accept_as_smart_auto(self):
+        self.done(2)
 
 class CameraView(QtWidgets.QWidget):
     image_path = None
@@ -134,7 +275,14 @@ class CameraView(QtWidgets.QWidget):
         self.auto_adjust_button.setMaximumWidth(60)
         auto_adjust_icon = QIcon(":icons/icons/zap.svg")
         self.auto_adjust_button.setIcon(auto_adjust_icon)
-        self.auto_adjust_button.setToolTip("Ajustar parâmetros da câmera automaticamente")
+        self.auto_adjust_button.setToolTip("Auto Ajuste da Câmera (Smart ROI)")
+
+        self.settings_button = QtWidgets.QPushButton()
+        self.settings_button.setMaximumHeight(35)
+        self.settings_button.setMaximumWidth(60)
+        self.settings_button.setIcon(QIcon(":icons/icons/sliders.svg"))
+        self.settings_button.setToolTip("Ajuste Manual de Câmera (Sliders)")
+        self.settings_button.setProperty("class", "overlay_btn")
 
         #picture_icon = QIcon(":icons/icons/camera.svg") 
         self.picture_button.setIcon(self.tint_icon(":icons/icons/camera.svg", "green"))
@@ -220,6 +368,7 @@ class CameraView(QtWidgets.QWidget):
         cam_actions.addWidget(self.live_button)
         cam_actions.addWidget(self.picture_button)
         cam_actions.addWidget(self.auto_adjust_button)
+        cam_actions.addWidget(self.settings_button)
         cam_actions.addWidget(self.save_button)
         cam_actions.addWidget(self.filter_btn)
         cam_actions.addWidget(self.file_button)  
@@ -241,6 +390,7 @@ class CameraView(QtWidgets.QWidget):
         self.picture_button.clicked.connect(self.take_picture)
         self.save_button.clicked.connect(self.save_picture)
         self.auto_adjust_button.clicked.connect(self.run_auto_adjust)
+        self.settings_button.clicked.connect(self.open_camera_settings)
         self.filter_btn.clicked.connect(self.toggle_filter)
         self.isLive = False
         self.th = None
@@ -263,10 +413,10 @@ class CameraView(QtWidgets.QWidget):
             config_idx = 0
 
         device_path = None
-        if isinstance(self.camera_usb_index, str) and self.camera_usb_index.startswith("/dev/video"):
-            device_path = self.camera_usb_index
-        elif isinstance(index, str) and index.startswith("/dev/video"):
+        if isinstance(index, str) and index.startswith("/dev/video"):
             device_path = index
+        elif isinstance(index, int):
+            device_path = f"/dev/video{index}"
             
         if cap and cap.isOpened():
             # Aplica via OpenCV primeiro
@@ -309,9 +459,67 @@ class CameraView(QtWidgets.QWidget):
             except Exception as e:
                 print(f"Aviso: v4l2-ctl não funcionou ou não está instalado: {e}")
 
+    def open_camera_settings(self):
+        if self.auto_adjust_roi is not None:
+            # We are in the middle of a Smart Auto Adjust ROI confirmation!
+            self.run_auto_adjust()
+            return
+
+        device_path = self.resolve_camera_index()
+        v4l2_path = None
+        if isinstance(device_path, str) and device_path.startswith('/dev/video'):
+            v4l2_path = device_path
+        elif isinstance(device_path, int):
+            v4l2_path = f"/dev/video{device_path}"
+            
+        if not v4l2_path:
+            QMessageBox.warning(self, "Erro", "O ajuste só funciona com câmeras V4L2 (ex: /dev/videoX).")
+            return
+
+        was_live = self.isLive
+        if not self.isLive:
+            self.start_live()
+            QThread.msleep(500)
+            QApplication.processEvents()
+            
+        dialog = CameraSettingsDialog(v4l2_path, self.camera_usb_index, self)
+        result = dialog.exec()
+        
+        if result == 1: # Accepted / Salvar
+            import config_ini
+            auto_exp = 1 if dialog.chk_auto_exp.isChecked() else 0
+            exp_val = dialog.sl_exposure.value()
+            auto_foc = 1 if dialog.chk_auto_foc.isChecked() else 0
+            foc_val = dialog.sl_focus.value()
+            
+            config_ini.cam_auto_exposure[self.camera_usb_index] = auto_exp
+            config_ini.cam_exposure[self.camera_usb_index] = exp_val
+            config_ini.cam_auto_focus[self.camera_usb_index] = auto_foc
+            config_ini.cam_focus[self.camera_usb_index] = foc_val
+            
+            update_config_file(self.camera_usb_index, auto_foc, foc_val, auto_exp, exp_val)
+            QMessageBox.information(self, "Salvo", "Configurações de câmera salvas com sucesso!")
+            
+        elif result == 2: # Smart Auto Adjust
+            self.run_auto_adjust()
+            
+        else:
+            import config_ini
+            self._apply_camera_settings(None, v4l2_path)
+            
+        if not was_live and self.isLive and result != 2:
+            self.stop_live()
+
     def run_auto_adjust(self):
         device_path = self.resolve_camera_index()
-        if not (isinstance(device_path, str) and device_path.startswith('/dev/video')):
+        
+        v4l2_path = None
+        if isinstance(device_path, str) and device_path.startswith('/dev/video'):
+            v4l2_path = device_path
+        elif isinstance(device_path, int):
+            v4l2_path = f"/dev/video{device_path}"
+            
+        if not v4l2_path:
             QMessageBox.warning(self, "Erro", "O auto ajuste só funciona com câmeras V4L2 (ex: /dev/videoX).")
             return
             
@@ -352,7 +560,7 @@ class CameraView(QtWidgets.QWidget):
         self.label.getView().removeItem(self.auto_adjust_roi)
         self.auto_adjust_roi = None
         self.auto_adjust_button.setIcon(QIcon(":icons/icons/zap.svg"))
-        self.auto_adjust_button.setToolTip("Ajustar parâmetros da câmera automaticamente")
+        self.auto_adjust_button.setToolTip("Auto Ajuste da Câmera (Smart ROI)")
 
         self.was_live_before_adjust = self.isLive
         if self.isLive:
@@ -364,7 +572,7 @@ class CameraView(QtWidgets.QWidget):
         self.progress_dialog.show()
 
         self.thread = QThread()
-        self.worker = AutoAdjustWorker(device_path, roi_rect)
+        self.worker = AutoAdjustWorker(v4l2_path, roi_rect)
         self.worker.moveToThread(self.thread)
 
         self.worker.progress.connect(self.update_progress)
@@ -421,7 +629,7 @@ class CameraView(QtWidgets.QWidget):
                     # Salvar no arquivo
                     save_focus = focus if focus != "Não Suportado" else config_ini.cam_focus[config_idx]
                     save_exp = exposure if exposure != "Não Suportado" else config_ini.cam_exposure[config_idx]
-                    update_config_file(config_idx, save_focus, save_exp)
+                    update_config_file(config_idx, 0, save_focus, 0, save_exp)
                     QMessageBox.information(self, "Salvo", "Configurações salvas em config_ini.py.")
 
                 # Reaplicar as configurações na câmera para garantir e mostrar o resultado
@@ -444,14 +652,25 @@ class CameraView(QtWidgets.QWidget):
     def resolve_camera_index(self):
         """Resolves the configured camera index to the actual system device index."""
         try:
-            # self.camera_usb_index is now the index for the config lists (0, 1, ...)
-            return config_ini.cam_usb_index[self.camera_usb_index]
+            import importlib
+            importlib.reload(config_ini)
+        except Exception:
+            pass
+            
+        try:
+            idx = config_ini.cam_usb_index[self.camera_usb_index]
+            if isinstance(idx, str) and idx.isdigit():
+                idx = int(idx)
+            return idx
         except IndexError:
             QMessageBox.warning(
                 self, "Erro de Configuração",
                 f"Índice de câmera {self.camera_usb_index} está fora dos limites para 'cam_usb_index' no config_ini.py."
             )
-            return self.camera_usb_index
+            idx = self.camera_usb_index
+            if isinstance(idx, str) and idx.isdigit():
+                idx = int(idx)
+            return idx
 
     def capture_single_frame(self):
         """Opens the camera, captures a single frame, and displays it."""
@@ -500,14 +719,18 @@ class CameraView(QtWidgets.QWidget):
                     
                 # Aplicar tratamento de imagem via software
                 try:
-                    contrast = config_ini.cam_sw_contrast[config_idx] if config_idx < len(config_ini.cam_sw_contrast) else 1.0
-                    brightness = config_ini.cam_sw_brightness[config_idx] if config_idx < len(config_ini.cam_sw_brightness) else 0
-                    sharpen = config_ini.cam_sw_sharpen[config_idx] if config_idx < len(config_ini.cam_sw_sharpen) else 0.0
+                    contrast_list = getattr(config_ini, 'cam_sw_contrast', [1.0, 1.0])
+                    brightness_list = getattr(config_ini, 'cam_sw_brightness', [0, 0])
+                    sharpen_list = getattr(config_ini, 'cam_sw_sharpen', [0.0, 0.0])
+                    
+                    contrast = contrast_list[config_idx] if config_idx < len(contrast_list) else 1.0
+                    brightness = brightness_list[config_idx] if config_idx < len(brightness_list) else 0
+                    sharpen = sharpen_list[config_idx] if config_idx < len(sharpen_list) else 0.0
                     
                     vision_lib = pv_visionlib.pvVisionLib()
                     captured_frame = vision_lib.enhance_image(captured_frame, contrast, brightness, sharpen)
-                except AttributeError:
-                    pass # Caso os parametros ainda não existam no config_ini
+                except Exception as e:
+                    print(f"Erro no tratamento de imagem: {e}")
                     
                 self.setImage(captured_frame) # Update the view
         except (IndexError, TypeError):
@@ -601,6 +824,7 @@ class CameraView(QtWidgets.QWidget):
     def disable_btns(self):
         self.live_button.setEnabled(False)
         self.picture_button.setEnabled(False)
+        self.settings_button.setEnabled(False)
         self.file_button.setEnabled(False)
         self.previous_button.setEnabled(False)
         self.next_button.setEnabled(False)
@@ -608,6 +832,7 @@ class CameraView(QtWidgets.QWidget):
     def enable_btns(self):
         self.live_button.setEnabled(True)
         self.picture_button.setEnabled(True)
+        self.settings_button.setEnabled(True)
         self.file_button.setEnabled(True)
         self.previous_button.setEnabled(True)
         self.next_button.setEnabled(True)
@@ -1505,19 +1730,25 @@ class Thread(QThread):
         QThread.__init__(self, parent)
         self.status = True
         self.cap = True
+        self.frame_count = 0
         
 
     def run(self):
-        if self.parent() and hasattr(self.parent(), '_apply_camera_settings'):
-            self.parent()._apply_camera_settings(None, self.index)
-
-        self.cap = cv2.VideoCapture(self.index)
+        self.cap = cv2.VideoCapture(self.index, cv2.CAP_V4L2)
+        if not self.cap.isOpened():
+            self.cap = cv2.VideoCapture(self.index)
         
         if self.cap.isOpened():
+            self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+            self.cap.set(cv2.CAP_PROP_FPS, 15)
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             
-            for _ in range(5):
+            if self.parent() and hasattr(self.parent(), '_apply_camera_settings'):
+                self.parent()._apply_camera_settings(self.cap, self.index)
+
+            for _ in range(15):
                 self.cap.read()
     
         
@@ -1525,6 +1756,14 @@ class Thread(QThread):
             ret, frame = self.cap.read()
             if not ret:
                 continue
+                
+            self.frame_count += 1
+            if self.frame_count % 15 == 0:
+                try:
+                    import importlib
+                    importlib.reload(config_ini)
+                except Exception:
+                    pass
 
             # Reading the frame, converting it to RGB, and flipping it for correct orientation
             try:
@@ -1540,14 +1779,18 @@ class Thread(QThread):
 
                 # Aplicar tratamento de imagem via software
                 try:
-                    contrast = config_ini.cam_sw_contrast[config_idx] if config_idx < len(config_ini.cam_sw_contrast) else 1.0
-                    brightness = config_ini.cam_sw_brightness[config_idx] if config_idx < len(config_ini.cam_sw_brightness) else 0
-                    sharpen = config_ini.cam_sw_sharpen[config_idx] if config_idx < len(config_ini.cam_sw_sharpen) else 0.0
+                    contrast_list = getattr(config_ini, 'cam_sw_contrast', [1.0, 1.0])
+                    brightness_list = getattr(config_ini, 'cam_sw_brightness', [0, 0])
+                    sharpen_list = getattr(config_ini, 'cam_sw_sharpen', [0.0, 0.0])
+                    
+                    contrast = contrast_list[config_idx] if config_idx < len(contrast_list) else 1.0
+                    brightness = brightness_list[config_idx] if config_idx < len(brightness_list) else 0
+                    sharpen = sharpen_list[config_idx] if config_idx < len(sharpen_list) else 0.0
                     
                     vision_lib = pv_visionlib.pvVisionLib()
                     final_frame = vision_lib.enhance_image(final_frame, contrast, brightness, sharpen)
-                except AttributeError:
-                    pass
+                except Exception as e:
+                    print(f"Erro no tratamento de imagem (Live): {e}")
 
                 # Emit signal
                 self.updateFrame.emit(final_frame)

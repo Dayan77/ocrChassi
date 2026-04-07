@@ -355,26 +355,58 @@ class DatasetView(QWidget):
         ret = msg_box.exec()
 
         if ret == QMessageBox.StandardButton.Apply:
+            path_mapping = {}
             # Perform moves first so paths are correct for flips if moved
             for move in self.pending_moves:
-                if os.path.exists(move['source']):
-                    os.rename(move['source'], move['destination'])
+                src = move['source']
+                dst = move['destination']
+                if os.path.exists(src):
+                    os.rename(src, dst)
+                    path_mapping[src] = dst
+                    
+                    # Move o arquivo JSON de anotação correspondente, se existir
+                    json_src = src + ".json"
+                    json_dst = dst + ".json"
+                    if os.path.exists(json_src):
+                        os.rename(json_src, json_dst)
             
             # Perform flips
             for file_path in self.pending_flips:
+                # Atualiza o caminho se o arquivo foi movido nesta mesma operação
+                file_path = path_mapping.get(file_path, file_path)
                 if os.path.exists(file_path):
                     try:
                         img = cv2.imread(file_path)
                         if img is not None:
+                            img_h, img_w = img.shape[:2]
                             img = cv2.flip(img, 1)
                             cv2.imwrite(file_path, img)
+                            
+                            # Atualiza as anotações JSON para refletir o espelhamento
+                            json_path = file_path + ".json"
+                            if os.path.exists(json_path):
+                                with open(json_path, 'r') as f:
+                                    annotations = json.load(f)
+                                for roi_id, data in annotations.items():
+                                    box = data.get('box')
+                                    if box:
+                                        # Inverte a coordenada X da caixa (x = largura_total - x_antigo - largura_caixa)
+                                        box['x'] = img_w - box['x'] - box['w']
+                                with open(json_path, 'w') as f:
+                                    json.dump(annotations, f, indent=4)
                     except Exception as e:
                         print(f"Error flipping image {file_path}: {e}")
 
             # Perform deletions
             for file_path in self.pending_deletions:
+                file_path = path_mapping.get(file_path, file_path)
                 if os.path.exists(file_path):
                     os.remove(file_path)
+                
+                # Deleta também o JSON correspondente, se existir
+                json_path = file_path + ".json"
+                if os.path.exists(json_path):
+                    os.remove(json_path)
             
             self.pending_deletions.clear()
             self.pending_moves.clear()

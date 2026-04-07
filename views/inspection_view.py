@@ -183,6 +183,7 @@ class CameraCaptureThread(QThread):
         self.cam_index = cam_index
         self.usb_index = usb_index
         self.running = False
+        self.frame_count = 0
 
     def _apply_camera_settings(self, cap):
         try:
@@ -211,26 +212,32 @@ class CameraCaptureThread(QThread):
                 if not config_ini.cam_auto_focus[config_idx]:
                     cap.set(cv2.CAP_PROP_FOCUS, config_ini.cam_focus[config_idx])
 
+            device_path = None
             if isinstance(self.usb_index, str) and self.usb_index.startswith("/dev/video"):
+                device_path = self.usb_index
+            elif isinstance(self.usb_index, int):
+                device_path = f"/dev/video{self.usb_index}"
+                
+            if device_path:
                 import subprocess
                 auto_exp = 3 if config_ini.cam_auto_exposure[config_idx] else 1
                 try:
-                    subprocess.run(['v4l2-ctl', '-d', self.usb_index, '-c', f'exposure_auto={auto_exp}'], stderr=subprocess.DEVNULL)
+                    subprocess.run(['v4l2-ctl', '-d', device_path, '-c', f'exposure_auto={auto_exp}'], stderr=subprocess.DEVNULL)
                     if not config_ini.cam_auto_exposure[config_idx]:
-                        subprocess.run(['v4l2-ctl', '-d', self.usb_index, '-c', f'exposure_absolute={config_ini.cam_exposure[config_idx]}'], stderr=subprocess.DEVNULL)
-                        subprocess.run(['v4l2-ctl', '-d', self.usb_index, '-c', 'exposure_auto_priority=0'], stderr=subprocess.DEVNULL)
-                        subprocess.run(['v4l2-ctl', '-d', self.usb_index, '-c', 'gain_auto=0'], stderr=subprocess.DEVNULL)
-                        subprocess.run(['v4l2-ctl', '-d', self.usb_index, '-c', 'autogain=0'], stderr=subprocess.DEVNULL)
+                        subprocess.run(['v4l2-ctl', '-d', device_path, '-c', f'exposure_absolute={config_ini.cam_exposure[config_idx]}'], stderr=subprocess.DEVNULL)
+                        subprocess.run(['v4l2-ctl', '-d', device_path, '-c', 'exposure_auto_priority=0'], stderr=subprocess.DEVNULL)
+                        subprocess.run(['v4l2-ctl', '-d', device_path, '-c', 'gain_auto=0'], stderr=subprocess.DEVNULL)
+                        subprocess.run(['v4l2-ctl', '-d', device_path, '-c', 'autogain=0'], stderr=subprocess.DEVNULL)
                     
                     wb_auto = config_ini.cam_auto_wb[config_idx]
-                    subprocess.run(['v4l2-ctl', '-d', self.usb_index, '-c', f'white_balance_temperature_auto={wb_auto}'], stderr=subprocess.DEVNULL)
+                    subprocess.run(['v4l2-ctl', '-d', device_path, '-c', f'white_balance_temperature_auto={wb_auto}'], stderr=subprocess.DEVNULL)
                     if not wb_auto:
-                        subprocess.run(['v4l2-ctl', '-d', self.usb_index, '-c', f'white_balance_temperature={config_ini.cam_wb_temperature[config_idx]}'], stderr=subprocess.DEVNULL)
+                        subprocess.run(['v4l2-ctl', '-d', device_path, '-c', f'white_balance_temperature={config_ini.cam_wb_temperature[config_idx]}'], stderr=subprocess.DEVNULL)
                         
                     focus_auto = config_ini.cam_auto_focus[config_idx]
-                    subprocess.run(['v4l2-ctl', '-d', self.usb_index, '-c', f'focus_auto={focus_auto}'], stderr=subprocess.DEVNULL)
+                    subprocess.run(['v4l2-ctl', '-d', device_path, '-c', f'focus_auto={focus_auto}'], stderr=subprocess.DEVNULL)
                     if not focus_auto:
-                        subprocess.run(['v4l2-ctl', '-d', self.usb_index, '-c', f'focus_absolute={config_ini.cam_focus[config_idx]}'], stderr=subprocess.DEVNULL)
+                        subprocess.run(['v4l2-ctl', '-d', device_path, '-c', f'focus_absolute={config_ini.cam_focus[config_idx]}'], stderr=subprocess.DEVNULL)
                 
                     time.sleep(0.5) # Aguarda a lente/sensor da câmera aplicar as configurações físicas
                 except Exception as e:
@@ -260,9 +267,15 @@ class CameraCaptureThread(QThread):
             if cap.isOpened():
                 ret, frame = cap.read()
                 if ret:
+                    self.frame_count += 1
+                    if self.frame_count % 15 == 0:
+                        try:
+                            import importlib
+                            importlib.reload(config_ini)
+                        except Exception:
+                            pass
                     # Aplicar tratamento de imagem via software
                     try:
-                        import config_ini
                         config_idx = self.cam_index if self.cam_index < len(getattr(config_ini, 'cam_sw_contrast', [1.0])) else 0
                         contrast = getattr(config_ini, 'cam_sw_contrast', [1.0, 1.0])[config_idx]
                         brightness = getattr(config_ini, 'cam_sw_brightness', [0, 0])[config_idx]
@@ -535,6 +548,21 @@ class InspectionView(QWidget):
         """)
         ctrl_header_layout.addWidget(self.redo_button)
         
+        self.save_training_button = QPushButton("Salvar p/ Treino")
+        self.save_training_button.setStyleSheet("""
+            QPushButton {
+                background-color: #89b4fa; 
+                color: #11111b; 
+                border-radius: 4px; 
+                padding: 5px 10px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #74c7ec;
+            }
+        """)
+        ctrl_header_layout.addWidget(self.save_training_button)
+        
         right_panel.addLayout(ctrl_header_layout)
         
         self.loaded_model_label = QLabel("Modelo: Nenhum")
@@ -589,6 +617,7 @@ class InspectionView(QWidget):
         self.load_image_btn1.clicked.connect(lambda: self.load_image_for_view(0))
         self.load_image_btn2.clicked.connect(lambda: self.load_image_for_view(1))
         self.redo_button.clicked.connect(self.redo_inference)
+        self.save_training_button.clicked.connect(self.save_to_training_folder)
 
     def initialize_cameras(self):
         # Check if threads are already running to avoid blocking re-initialization
@@ -870,9 +899,31 @@ class InspectionView(QWidget):
                 part2 = "".join(c for c, conf in cam2_chars[L2-k2:]) if k2 > 0 else ""
                 final_string = part1 + part2
 
-        # optionally reverse the computed string based on config
-        if getattr(config_ini, 'production_results_inverted', False) and final_string:
-            final_string = final_string[::-1]
+        # Aplica a máscara de formatação (A=Letra, 9=Número, #=Qualquer)
+        try:
+            import importlib
+            importlib.reload(config_ini)
+        except Exception:
+            pass
+            
+        pattern = getattr(config_ini, 'production_serial_pattern', "").upper()
+        if pattern and final_string and "|" not in final_string:
+            corrected_string = ""
+            for char, p in zip(final_string, pattern):
+                if p == 'A':
+                    fixes = {'0':'O', '1':'I', '2':'Z', '5':'S', '6':'G', '7':'T', '8':'B'}
+                    corrected_string += fixes.get(char, char)
+                elif p == '9':
+                    fixes = {'O':'0', 'Q':'0', 'D':'0', 'I':'1', 'L':'1', 'Z':'2', 'S':'5', 'B':'8', 'G':'6', 'T':'7'}
+                    corrected_string += fixes.get(char, char)
+                else:
+                    corrected_string += char
+            
+            # Acrescenta qualquer caractere excedente caso o serial lido seja maior que a máscara
+            if len(final_string) > len(pattern):
+                corrected_string += final_string[len(pattern):]
+                
+            final_string = corrected_string
 
         display_text = final_string if final_string else characters_output
         if not display_text.strip():
@@ -930,3 +981,64 @@ class InspectionView(QWidget):
             rgb_image.data, w, h, bytes_per_line, QImage.Format_RGB888
         )
         return QPixmap.fromImage(convert_to_Qt_format).copy() # return isolated copy
+
+    def save_to_training_folder(self):
+        try:
+            import importlib
+            importlib.reload(config_ini)
+        except Exception:
+            pass
+            
+        folder = getattr(config_ini, 'production_training_folder', "dataset/treino_chassi")
+        
+        # Forçar para caminho absoluto para garantir que a pasta seja criada no local exato e visível
+        folder = os.path.abspath(folder)
+        
+        if not os.path.exists(folder):
+            try:
+                os.makedirs(folder, exist_ok=True)
+            except Exception as e:
+                QMessageBox.warning(self, "Erro", f"Não foi possível criar a pasta de treino:\n{folder}\nErro: {e}")
+                return
+                
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        saved = 0
+        erros = []
+        
+        if self.cam1_raw_frame is not None:
+            path1 = os.path.join(folder, f"imagem_train_{timestamp}_cam1.png")
+            success1, buffer1 = cv2.imencode('.png', self.cam1_raw_frame)
+            if success1:
+                try:
+                    with open(path1, 'wb') as f:
+                        f.write(buffer1.tobytes())
+                    saved += 1
+                except Exception as e:
+                    erros.append(f"Erro Python Cam 1: {e}")
+            else:
+                erros.append("Falha OpenCV ao encodar Cam 1.")
+            
+        if self.cam2_raw_frame is not None:
+            path2 = os.path.join(folder, f"imagem_train_{timestamp}_cam2.png")
+            success2, buffer2 = cv2.imencode('.png', self.cam2_raw_frame)
+            if success2:
+                try:
+                    with open(path2, 'wb') as f:
+                        f.write(buffer2.tobytes())
+                    saved += 1
+                except Exception as e:
+                    erros.append(f"Erro Python Cam 2: {e}")
+            else:
+                erros.append("Falha OpenCV ao encodar Cam 2.")
+            
+        if saved > 0:
+            msg = f"{saved} imagem(ns) salva(s) com sucesso na pasta:\n{folder}"
+            if erros:
+                msg += "\n\nAvisos:\n" + "\n".join(erros)
+            print(msg)
+            QMessageBox.information(self, "Sucesso", msg)
+        else:
+            if erros:
+                QMessageBox.critical(self, "Erro ao Salvar", "\n".join(erros) + f"\n\nTentou salvar em:\n{folder}")
+            else:
+                QMessageBox.warning(self, "Aviso", "Nenhuma imagem disponível para salvar. Capture ou carregue uma imagem primeiro.")
