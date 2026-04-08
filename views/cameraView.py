@@ -43,7 +43,8 @@ from PySide6.QtWidgets import QProgressDialog, QMessageBox, QDialog, QSlider, QC
 import icons_rc, images_rc, config_ini
 color_bg="#b1b5b99f"
 
-def update_config_file(cam_config_index, auto_focus, focus, auto_exp, exposure):
+def update_config_file(cam_config_index, auto_focus, focus, auto_exp, exposure,
+                       sw_contrast=None, sw_brightness=None, sw_sharpen=None):
     """
     ATENÇÃO: Esta função modifica diretamente o arquivo config_ini.py.
     É uma abordagem frágil, mas funciona para o propósito atual.
@@ -76,6 +77,12 @@ def update_config_file(cam_config_index, auto_focus, focus, auto_exp, exposure):
                 
                 line = update_list_value(line, 'cam_auto_focus', cam_config_index, auto_focus)
                 line = update_list_value(line, 'cam_auto_exposure', cam_config_index, auto_exp)
+                if sw_contrast is not None:
+                    line = update_list_value(line, 'cam_sw_contrast', cam_config_index, round(sw_contrast, 2))
+                if sw_brightness is not None:
+                    line = update_list_value(line, 'cam_sw_brightness', cam_config_index, int(sw_brightness))
+                if sw_sharpen is not None:
+                    line = update_list_value(line, 'cam_sw_sharpen', cam_config_index, round(sw_sharpen, 2))
                 f.write(line)
     except Exception as e:
         print(f"Erro ao atualizar o arquivo de configuração: {e}")
@@ -176,7 +183,51 @@ class CameraSettingsDialog(QDialog):
         foc_layout.addWidget(self.lbl_foc_val)
         foc_layout.addWidget(self.sl_focus)
         layout.addWidget(gb_foc)
-        
+
+        # --- Processamento por Software (funciona em todas as plataformas) ---
+        gb_sw = QGroupBox("Imagem por Software (macOS + Linux)")
+        sw_layout = QVBoxLayout(gb_sw)
+
+        sw_contrast = getattr(config_ini, 'cam_sw_contrast', [1.0, 1.0])
+        sw_brightness = getattr(config_ini, 'cam_sw_brightness', [0, 0])
+        sw_sharpen = getattr(config_ini, 'cam_sw_sharpen', [0.0, 0.0])
+
+        curr_contrast = sw_contrast[self.config_idx] if self.config_idx < len(sw_contrast) else 1.0
+        curr_brightness = sw_brightness[self.config_idx] if self.config_idx < len(sw_brightness) else 0
+        curr_sharpen = sw_sharpen[self.config_idx] if self.config_idx < len(sw_sharpen) else 0.0
+
+        # Contraste: 0.1 a 3.0 (x100 para usar slider inteiro)
+        self.lbl_contrast = QLabel(f"Contraste: {curr_contrast:.2f}")
+        self.sl_contrast = QSlider(Qt.Orientation.Horizontal)
+        self.sl_contrast.setRange(10, 300)
+        self.sl_contrast.setValue(int(curr_contrast * 100))
+        self.sl_contrast.valueChanged.connect(lambda v: self.lbl_contrast.setText(f"Contraste: {v/100:.2f}"))
+        self.sl_contrast.sliderReleased.connect(self._apply_sw_settings)
+
+        # Brilho: -100 a 100
+        self.lbl_brightness = QLabel(f"Brilho: {curr_brightness}")
+        self.sl_brightness = QSlider(Qt.Orientation.Horizontal)
+        self.sl_brightness.setRange(-100, 100)
+        self.sl_brightness.setValue(int(curr_brightness))
+        self.sl_brightness.valueChanged.connect(lambda v: self.lbl_brightness.setText(f"Brilho: {v}"))
+        self.sl_brightness.sliderReleased.connect(self._apply_sw_settings)
+
+        # Nitidez: 0.0 a 3.0 (x100)
+        self.lbl_sharpen = QLabel(f"Nitidez: {curr_sharpen:.2f}")
+        self.sl_sharpen = QSlider(Qt.Orientation.Horizontal)
+        self.sl_sharpen.setRange(0, 300)
+        self.sl_sharpen.setValue(int(curr_sharpen * 100))
+        self.sl_sharpen.valueChanged.connect(lambda v: self.lbl_sharpen.setText(f"Nitidez: {v/100:.2f}"))
+        self.sl_sharpen.sliderReleased.connect(self._apply_sw_settings)
+
+        sw_layout.addWidget(self.lbl_contrast)
+        sw_layout.addWidget(self.sl_contrast)
+        sw_layout.addWidget(self.lbl_brightness)
+        sw_layout.addWidget(self.sl_brightness)
+        sw_layout.addWidget(self.lbl_sharpen)
+        sw_layout.addWidget(self.sl_sharpen)
+        layout.addWidget(gb_sw)
+
         # --- Botoes ---
         btn_layout = QHBoxLayout()
         self.btn_auto_smart = QPushButton("Auto Ajuste (Smart ROI)")
@@ -225,7 +276,22 @@ class CameraSettingsDialog(QDialog):
         val = self.sl_focus.value()
         import subprocess
         subprocess.run(['v4l2-ctl', '-d', self.device_path, '-c', f'focus_absolute={val}'], stderr=subprocess.DEVNULL)
-        
+
+    def _apply_sw_settings(self):
+        """Aplica ajustes de software no config_ini em tempo real (funciona em todas as plataformas)."""
+        import importlib
+        import config_ini
+        contrast = self.sl_contrast.value() / 100.0
+        brightness = self.sl_brightness.value()
+        sharpen = self.sl_sharpen.value() / 100.0
+        idx = self.config_idx
+        try:
+            config_ini.cam_sw_contrast[idx] = contrast
+            config_ini.cam_sw_brightness[idx] = brightness
+            config_ini.cam_sw_sharpen[idx] = sharpen
+        except (IndexError, AttributeError):
+            pass
+
     def accept_as_smart_auto(self):
         self.done(2)
 
@@ -502,13 +568,20 @@ class CameraView(QtWidgets.QWidget):
             exp_val = dialog.sl_exposure.value()
             auto_foc = 1 if dialog.chk_auto_foc.isChecked() else 0
             foc_val = dialog.sl_focus.value()
-            
+            sw_contrast = dialog.sl_contrast.value() / 100.0
+            sw_brightness = dialog.sl_brightness.value()
+            sw_sharpen = dialog.sl_sharpen.value() / 100.0
+
             config_ini.cam_auto_exposure[self.camera_usb_index] = auto_exp
             config_ini.cam_exposure[self.camera_usb_index] = exp_val
             config_ini.cam_auto_focus[self.camera_usb_index] = auto_foc
             config_ini.cam_focus[self.camera_usb_index] = foc_val
-            
-            update_config_file(self.camera_usb_index, auto_foc, foc_val, auto_exp, exp_val)
+            config_ini.cam_sw_contrast[self.camera_usb_index] = sw_contrast
+            config_ini.cam_sw_brightness[self.camera_usb_index] = sw_brightness
+            config_ini.cam_sw_sharpen[self.camera_usb_index] = sw_sharpen
+
+            update_config_file(self.camera_usb_index, auto_foc, foc_val, auto_exp, exp_val,
+                               sw_contrast, sw_brightness, sw_sharpen)
             QMessageBox.information(self, "Salvo", "Configurações de câmera salvas com sucesso!")
             
         elif result == 2: # Smart Auto Adjust
