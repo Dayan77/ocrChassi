@@ -2,16 +2,13 @@ import os
 import ssl
 #ssl._create_default_https_context = ssl._create_unverified_context
 
-os.environ["KERAS_BACKEND"] = "tensorflow"
-
 #import keras
 #from keras import layers
 
 #import matplotlib.pyplot as plt
 import numpy as np
 import random
-import tensorflow as tf
-import tensorflow_datasets as tfds
+
 #import pytesseract
 #import easyocr
 

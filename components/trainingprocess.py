@@ -28,13 +28,15 @@ try:
 except ImportError:
     YOLO = None
 
-# try:
-#     import tensorflow as tf
-#     from tensorflow import keras
-#     from keras import layers
-# except ImportError:
-#     print("TensorFlow/Keras not found. Training will not be available.")
-#     tf = None
+try:
+    import tensorflow as tf
+    from tensorflow import keras
+    from keras import layers
+except (ImportError, Exception):
+    print("TensorFlow/Keras not found. Training will not be available.")
+    tf = None
+    keras = None
+    layers = None
 
 try:
     import torch
@@ -58,24 +60,23 @@ def _calculate_iou(boxA, boxB):
     iou = inter_area / float(boxA_area + boxB_area - inter_area) if float(boxA_area + boxB_area - inter_area) > 0 else 0
     return iou
 
-# class KerasProgressCallback(keras.callbacks.Callback):
-#     """A Keras callback to update the UI during training."""
-#     def __init__(self, progress_signal, log_signal):
-#         super().__init__()
-#         self.progress_signal = progress_signal
-#         self.log_signal = log_signal
-#
-#     def on_epoch_end(self, epoch, logs=None):
-#         logs = logs or {}
-#         # Calculate progress based on epochs
-#         progress_percent = int(((epoch + 1) / self.params['epochs']) * 100)
-#         self.progress_signal.emit(progress_percent)
-#
-#         # Format and emit log message
-#         log_message = f"Epoch {epoch+1}/{self.params['epochs']}"
-#         for key, value in logs.items():
-#             log_message += f" - {key}: {value:.4f}"
-#         self.log_signal(log_message)
+_KerasBase = keras.callbacks.Callback if keras else object
+
+class KerasProgressCallback(_KerasBase):
+    """A Keras callback to update the UI during training."""
+    def __init__(self, progress_signal, log_signal):
+        super().__init__()
+        self.progress_signal = progress_signal
+        self.log_signal = log_signal
+
+    def on_epoch_end(self, epoch, logs=None):
+        logs = logs or {}
+        progress_percent = int(((epoch + 1) / self.params['epochs']) * 100)
+        self.progress_signal.emit(progress_percent)
+        log_message = f"Epoch {epoch+1}/{self.params['epochs']}"
+        for key, value in logs.items():
+            log_message += f" - {key}: {value:.4f}"
+        self.log_signal(log_message)
 
 def cnn_data_generator(image_paths, model_data, detector_model):
     """

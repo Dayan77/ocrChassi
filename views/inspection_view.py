@@ -148,7 +148,18 @@ class InferenceWorker(QObject):
                     
                     char_text = "?"
                     conf_val = 0.0
-                    if self.library == "PyTorch" and self.recognition_model and torch:
+                    if self.library == "TensorFlow" and self.recognition_model:
+                        import tensorflow as tf
+                        input_data = np.expand_dims(normalized, axis=0)
+                        input_data = np.expand_dims(input_data, axis=-1)
+                        pred = self.recognition_model.predict(input_data, verbose=0)
+                        idx = np.argmax(pred)
+                        conf_val = float(np.max(pred))
+                        if idx < len(class_names):
+                            char_text = class_names[idx]
+                        else:
+                            print(f"Índice previsto {idx} fora dos limites (0-{len(class_names)-1})")
+                    elif self.library == "PyTorch" and self.recognition_model and torch:
                         input_tensor = torch.from_numpy(normalized).unsqueeze(0).unsqueeze(0).float().to(self.device)
                         with torch.no_grad():
                             outputs = self.recognition_model(input_tensor)
@@ -732,7 +743,12 @@ class InspectionView(QWidget):
                         print("YOLO not installed.")
                 
                 # Load Recognition
-                if self.library == 'PyTorch':
+                if self.library == 'TensorFlow':
+                    rec_path = self.model_data.get('encoder_filename')
+                    if rec_path and os.path.exists(rec_path):
+                        import tensorflow as tf
+                        self.recognition_model = tf.keras.models.load_model(rec_path, compile=False)
+                elif self.library == 'PyTorch':
                     rec_path = self.model_data.get('encoder_filename')
                     if rec_path:
                         base, _ = os.path.splitext(rec_path)
