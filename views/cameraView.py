@@ -39,12 +39,20 @@ import pv_visionlib
 import pyqtgraph as pg
 from PySide6.QtWidgets import QProgressDialog, QMessageBox, QDialog, QSlider, QCheckBox, QVBoxLayout, QHBoxLayout, QLabel, QGroupBox, QApplication, QPushButton
 
+try:
+    import pyrealsense2 as rs
+    _RS_AVAILABLE = True
+except ImportError:
+    rs = None
+    _RS_AVAILABLE = False
+    print("pyrealsense2 não encontrado — câmeras RealSense desativadas neste ambiente.")
+
 
 import icons_rc, images_rc, config_ini
 color_bg="#b1b5b99f"
 
 def update_config_file(cam_config_index, auto_focus, focus, auto_exp, exposure,
-                       sw_contrast=None, sw_brightness=None, sw_sharpen=None):
+                       sw_contrast=None, sw_brightness=None, sw_sharpen=None, rs_gain=None):
     """
     ATENÇÃO: Esta função modifica diretamente o arquivo config_ini.py.
     É uma abordagem frágil, mas funciona para o propósito atual.
@@ -83,6 +91,8 @@ def update_config_file(cam_config_index, auto_focus, focus, auto_exp, exposure,
                     line = update_list_value(line, 'cam_sw_brightness', cam_config_index, int(sw_brightness))
                 if sw_sharpen is not None:
                     line = update_list_value(line, 'cam_sw_sharpen', cam_config_index, round(sw_sharpen, 2))
+                if rs_gain is not None:
+                    line = update_list_value(line, 'cam_rs_gain', cam_config_index, int(rs_gain))
                 f.write(line)
     except Exception as e:
         print(f"Erro ao atualizar o arquivo de configuração: {e}")
@@ -92,12 +102,22 @@ class CameraSettingsDialog(QDialog):
         super().__init__(parent)
         self.device_path = device_path
         self.config_idx = current_config_idx
-        self.setWindowTitle("Configurações da Câmera (Manual)")
-        self.setMinimumWidth(400)
+        try:
+            cam_types = getattr(config_ini, 'cam_type', ['usb', 'usb'])
+            self.is_realsense = cam_types[current_config_idx] == 'realsense'
+        except (IndexError, TypeError):
+            self.is_realsense = False
+        self.setWindowTitle("Configurações da Câmera (RealSense)" if self.is_realsense else "Configurações da Câmera (Manual)")
+        self.setMinimumWidth(420)
         
-        self.exposure_info = self._get_ctrl_info('exposure_absolute', 3, 5000, 250)
-        self.focus_info = self._get_ctrl_info('focus_absolute', 0, 250, 0)
-        
+        if self.is_realsense:
+            # D455c: exposição em microssegundos, foco 0-255
+            self.exposure_info = {'min': 1, 'max': 165000, 'val': 8500}
+            self.focus_info = {'min': 0, 'max': 255, 'val': 0}
+        else:
+            self.exposure_info = self._get_ctrl_info('exposure_absolute', 3, 5000, 250)
+            self.focus_info = self._get_ctrl_info('focus_absolute', 0, 250, 0)
+
         self.init_ui()
         
     def _get_ctrl_info(self, ctrl_name, default_min, default_max, default_val):
@@ -184,6 +204,23 @@ class CameraSettingsDialog(QDialog):
         foc_layout.addWidget(self.sl_focus)
         layout.addWidget(gb_foc)
 
+        # --- Ganho (apenas RealSense) ---
+        if self.is_realsense:
+            gb_gain = QGroupBox("Ganho do Sensor (RealSense)")
+            gain_layout = QVBoxLayout(gb_gain)
+            curr_gain = getattr(config_ini, 'cam_rs_gain', [64, 64])[self.config_idx]
+            self.lbl_gain = QLabel(f"Ganho: {curr_gain}")
+            self.sl_gain = QSlider(Qt.Orientation.Horizontal)
+            self.sl_gain.setRange(16, 248)
+            self.sl_gain.setValue(int(curr_gain))
+            self.sl_gain.valueChanged.connect(lambda v: self.lbl_gain.setText(f"Ganho: {v}"))
+            self.sl_gain.sliderReleased.connect(self._apply_gain)
+            gain_layout.addWidget(self.lbl_gain)
+            gain_layout.addWidget(self.sl_gain)
+            layout.addWidget(gb_gain)
+        else:
+            self.sl_gain = None
+
         # --- Processamento por Software (funciona em todas as plataformas) ---
         gb_sw = QGroupBox("Imagem por Software (macOS + Linux)")
         sw_layout = QVBoxLayout(gb_sw)
@@ -266,30 +303,62 @@ class CameraSettingsDialog(QDialog):
         if not is_auto:
             self._apply_focus()
             
+    def _get_rs_sensor(self):
+        """Retorna o color sensor do thread RealSense ativo, ou None."""
+        if self.parent() and hasattr(self.parent(), 'th'):
+            th = self.parent().th
+            if isinstance(th, RealSenseThread) and th.sensor:
+                return th.sensor
+        return None
+
     def _apply_exposure(self):
         val = self.sl_exposure.value()
-        if _IS_MACOS:
-            # Aplica via OpenCV AVFoundation com mapeamento de escala
+        if self.is_realsense and _RS_AVAILABLE:
+            sensor = self._get_rs_sensor()
+            if sensor:
+                try:
+                    sensor.set_option(rs.option.enable_auto_exposure, 0.0)
+                    sensor.set_option(rs.option.exposure, float(val))
+                    print(f"[RealSense] Exposição: {val} μs")
+                except Exception as e:
+                    print(f"[RealSense] Erro ao aplicar exposição: {e}")
+        elif _IS_MACOS:
             if self.parent() and hasattr(self.parent(), 'th') and self.parent().th:
-                cap = self.parent().th.cap
-            elif self.parent() and hasattr(self.parent(), 'capture_single_frame'):
-                cap = None  # será aplicado no próximo capture
-            else:
-                cap = None
-            if cap and cap.isOpened():
-                macos_exp = CameraView._linux_exposure_to_macos(val)
-                cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
-                cap.set(cv2.CAP_PROP_EXPOSURE, macos_exp)
-                print(f"[macOS] Exposição ao vivo: Linux={val} → macOS={macos_exp:.2f}")
+                cap = getattr(self.parent().th, 'cap', None)
+                if cap and cap.isOpened():
+                    macos_exp = CameraView._linux_exposure_to_macos(val)
+                    cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
+                    cap.set(cv2.CAP_PROP_EXPOSURE, macos_exp)
         else:
             import subprocess
             subprocess.run(['v4l2-ctl', '-d', self.device_path, '-c', f'exposure_absolute={val}'], stderr=subprocess.DEVNULL)
             subprocess.run(['v4l2-ctl', '-d', self.device_path, '-c', 'exposure_auto_priority=0'], stderr=subprocess.DEVNULL)
-        
+
     def _apply_focus(self):
         val = self.sl_focus.value()
-        import subprocess
-        subprocess.run(['v4l2-ctl', '-d', self.device_path, '-c', f'focus_absolute={val}'], stderr=subprocess.DEVNULL)
+        if self.is_realsense and _RS_AVAILABLE:
+            sensor = self._get_rs_sensor()
+            if sensor and sensor.supports(rs.option.focus):
+                try:
+                    sensor.set_option(rs.option.enable_auto_focus, 0.0)
+                    sensor.set_option(rs.option.focus, float(val))
+                    print(f"[RealSense] Foco: {val}")
+                except Exception as e:
+                    print(f"[RealSense] Erro ao aplicar foco: {e}")
+        else:
+            import subprocess
+            subprocess.run(['v4l2-ctl', '-d', self.device_path, '-c', f'focus_absolute={val}'], stderr=subprocess.DEVNULL)
+
+    def _apply_gain(self):
+        val = self.sl_gain.value() if self.sl_gain else 64
+        if self.is_realsense and _RS_AVAILABLE:
+            sensor = self._get_rs_sensor()
+            if sensor:
+                try:
+                    sensor.set_option(rs.option.gain, float(val))
+                    print(f"[RealSense] Ganho: {val}")
+                except Exception as e:
+                    print(f"[RealSense] Erro ao aplicar ganho: {e}")
 
     def _apply_sw_settings(self):
         """Aplica ajustes de software no config_ini em tempo real (funciona em todas as plataformas)."""
@@ -582,7 +651,7 @@ class CameraView(QtWidgets.QWidget):
         elif isinstance(device_path, int):
             v4l2_path = f"/dev/video{device_path}"
             
-        if not v4l2_path and not _IS_MACOS:
+        if not v4l2_path and not _IS_MACOS and self._get_cam_type() != 'realsense':
             QMessageBox.warning(self, "Erro", "O ajuste só funciona com câmeras V4L2 (ex: /dev/videoX).")
             return
 
@@ -604,6 +673,7 @@ class CameraView(QtWidgets.QWidget):
             sw_contrast = dialog.sl_contrast.value() / 100.0
             sw_brightness = dialog.sl_brightness.value()
             sw_sharpen = dialog.sl_sharpen.value() / 100.0
+            rs_gain = dialog.sl_gain.value() if dialog.sl_gain else None
 
             config_ini.cam_auto_exposure[self.camera_usb_index] = auto_exp
             config_ini.cam_exposure[self.camera_usb_index] = exp_val
@@ -612,9 +682,11 @@ class CameraView(QtWidgets.QWidget):
             config_ini.cam_sw_contrast[self.camera_usb_index] = sw_contrast
             config_ini.cam_sw_brightness[self.camera_usb_index] = sw_brightness
             config_ini.cam_sw_sharpen[self.camera_usb_index] = sw_sharpen
+            if rs_gain is not None and hasattr(config_ini, 'cam_rs_gain'):
+                config_ini.cam_rs_gain[self.camera_usb_index] = rs_gain
 
             update_config_file(self.camera_usb_index, auto_foc, foc_val, auto_exp, exp_val,
-                               sw_contrast, sw_brightness, sw_sharpen)
+                               sw_contrast, sw_brightness, sw_sharpen, rs_gain)
             QMessageBox.information(self, "Salvo", "Configurações de câmera salvas com sucesso!")
             
         elif result == 2: # Smart Auto Adjust
@@ -791,9 +863,11 @@ class CameraView(QtWidgets.QWidget):
 
     def capture_single_frame(self):
         """Opens the camera, captures a single frame, and displays it."""
+        if self._get_cam_type() == 'realsense':
+            self._capture_single_frame_realsense()
+            return
+
         real_index = self.resolve_camera_index()
-        # If not live, open camera, grab a single frame, and close
-        
         cap = cv2.VideoCapture(real_index)
         if not cap.isOpened():
             # List available cameras to help debugging
@@ -851,6 +925,48 @@ class CameraView(QtWidgets.QWidget):
         except (IndexError, TypeError):
              QMessageBox.warning(self, "Erro de Configuração", f"Índice de câmera {self.camera_usb_index} inválido em config_ini.py.")
              cap.release()
+
+    def _capture_single_frame_realsense(self):
+        """Captura um único frame de uma câmera RealSense."""
+        if not _RS_AVAILABLE:
+            QMessageBox.warning(self, "RealSense Indisponível",
+                "pyrealsense2 não encontrado.\nInstale com: pip install pyrealsense2")
+            return
+        try:
+            pipeline = rs.pipeline()
+            cfg = rs.config()
+            serial = getattr(config_ini, 'cam_rs_serial', ['', ''])[self.camera_usb_index]
+            if serial:
+                cfg.enable_device(serial)
+            cfg.enable_stream(rs.stream.color, 1280, 720, rs.format.bgr8, 30)
+            profile = pipeline.start(cfg)
+
+            sensor = profile.get_device().first_color_sensor()
+            tmp_thread = RealSenseThread(self.camera_usb_index, serial)
+            tmp_thread.sensor = sensor
+            tmp_thread.apply_settings(sensor)
+
+            # Descarta frames iniciais para estabilização
+            for _ in range(20):
+                pipeline.wait_for_frames(timeout_ms=2000)
+
+            frames = pipeline.wait_for_frames(timeout_ms=3000)
+            color_frame = frames.get_color_frame()
+            pipeline.stop()
+
+            if color_frame:
+                frame = np.asanyarray(color_frame.get_data())
+                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                config_idx = self.camera_usb_index
+                if getattr(config_ini, 'cam_usb_flip', [0, 0])[config_idx] == 1:
+                    rgb_frame = cv2.flip(rgb_frame, 1)
+                contrast = getattr(config_ini, 'cam_sw_contrast', [1.0, 1.0])[config_idx]
+                brightness = getattr(config_ini, 'cam_sw_brightness', [0, 0])[config_idx]
+                sharpen = getattr(config_ini, 'cam_sw_sharpen', [0.0, 0.0])[config_idx]
+                rgb_frame = pv_visionlib.pvVisionLib().enhance_image(rgb_frame, contrast, brightness, sharpen)
+                self.setImage(rgb_frame)
+        except Exception as e:
+            QMessageBox.warning(self, "RealSense Erro", f"Erro ao capturar frame:\n{e}")
 
     def save_picture(self):
         """Saves the currently displayed image to a file."""
@@ -1364,19 +1480,36 @@ class CameraView(QtWidgets.QWidget):
 
 
 
+    def _get_cam_type(self):
+        """Retorna o tipo da câmera para este índice: 'realsense' ou 'usb'."""
+        try:
+            return getattr(config_ini, 'cam_type', ['usb', 'usb'])[self.camera_usb_index]
+        except (IndexError, TypeError):
+            return 'usb'
+
     def start_live(self):
         if not self.isLive:
             self.isLive = True
-            self.th = Thread(self)
-            self.th.index = self.resolve_camera_index()
-            #self.th.finished.connect(self.close)
+            if self._get_cam_type() == 'realsense':
+                if not _RS_AVAILABLE:
+                    QMessageBox.warning(self, "RealSense Indisponível",
+                        "pyrealsense2 não encontrado.\nInstale com: pip install pyrealsense2")
+                    self.isLive = False
+                    return
+                try:
+                    serial = getattr(config_ini, 'cam_rs_serial', ['', ''])[self.camera_usb_index]
+                except (IndexError, TypeError):
+                    serial = ''
+                self.th = RealSenseThread(self.camera_usb_index, serial, self)
+            else:
+                self.th = Thread(self)
+                self.th.index = self.resolve_camera_index()
+
             self.th.updateFrame.connect(self.setImage)
-            self.runWebCam(self.camera_usb_index)
-            
+            self.th.start()
             self.live_button.setChecked(True)
         else:
             self.th.status = False
-            #self.th.terminate()
             self.th = None
             self.live_button.setChecked(False)
             self.isLive = False
@@ -1910,8 +2043,131 @@ class Thread(QThread):
                 self.status = False
         self.cap.release()
         self.cap = None
-        #sys.exit(-1)
 
+
+class RealSenseThread(QThread):
+    """Thread de captura para câmeras Intel RealSense D455/D455c via SDK pyrealsense2."""
+    updateFrame = Signal(np.ndarray)
+
+    def __init__(self, config_idx, serial="", parent=None):
+        super().__init__(parent)
+        self.config_idx = config_idx
+        self.serial = serial        # Número de série da câmera (vazio = primeira disponível)
+        self.status = True
+        self.pipeline = None
+        self.sensor = None          # Referência ao color sensor para ajuste em tempo real
+        self.frame_count = 0
+
+    def apply_settings(self, sensor=None):
+        """Aplica configurações do config_ini ao color sensor RealSense."""
+        if not _RS_AVAILABLE:
+            return
+        try:
+            import importlib
+            importlib.reload(config_ini)
+        except Exception:
+            pass
+
+        target = sensor or self.sensor
+        if target is None:
+            return
+
+        idx = self.config_idx
+        try:
+            # Exposição
+            auto_exp = getattr(config_ini, 'cam_auto_exposure', [1, 1])[idx]
+            target.set_option(rs.option.enable_auto_exposure, float(auto_exp))
+            if not auto_exp:
+                exp_val = float(getattr(config_ini, 'cam_exposure', [8500, 8500])[idx])
+                target.set_option(rs.option.exposure, exp_val)
+
+            # Ganho
+            gain_val = float(getattr(config_ini, 'cam_rs_gain', [64, 64])[idx])
+            target.set_option(rs.option.gain, gain_val)
+
+            # Balanço de Branco
+            auto_wb = getattr(config_ini, 'cam_auto_wb', [0, 0])[idx]
+            target.set_option(rs.option.enable_auto_white_balance, float(auto_wb))
+            if not auto_wb:
+                wb_val = float(getattr(config_ini, 'cam_wb_temperature', [4000, 4000])[idx])
+                target.set_option(rs.option.white_balance, wb_val)
+
+            # Foco (D455c suporta foco motorizado)
+            if target.supports(rs.option.enable_auto_focus):
+                auto_foc = getattr(config_ini, 'cam_auto_focus', [0, 0])[idx]
+                target.set_option(rs.option.enable_auto_focus, float(auto_foc))
+                if not auto_foc and target.supports(rs.option.focus):
+                    foc_val = float(getattr(config_ini, 'cam_focus', [0, 0])[idx])
+                    target.set_option(rs.option.focus, foc_val)
+
+        except Exception as e:
+            print(f"[RealSense] Erro ao aplicar configurações: {e}")
+
+    def run(self):
+        if not _RS_AVAILABLE:
+            print("[RealSense] pyrealsense2 não disponível.")
+            return
+
+        try:
+            pipeline = rs.pipeline()
+            cfg = rs.config()
+            if self.serial:
+                cfg.enable_device(self.serial)
+            cfg.enable_stream(rs.stream.color, 1280, 720, rs.format.bgr8, 30)
+            profile = pipeline.start(cfg)
+            self.pipeline = pipeline
+
+            device = profile.get_device()
+            self.sensor = device.first_color_sensor()
+            self.apply_settings(self.sensor)
+
+            # Descarta os primeiros frames para estabilização do sensor
+            for _ in range(20):
+                pipeline.wait_for_frames(timeout_ms=2000)
+
+            while self.status:
+                try:
+                    frames = pipeline.wait_for_frames(timeout_ms=3000)
+                except RuntimeError:
+                    continue
+
+                color_frame = frames.get_color_frame()
+                if not color_frame:
+                    continue
+
+                self.frame_count += 1
+                if self.frame_count % 30 == 0:
+                    # Recarrega config periodicamente para refletir ajustes salvos
+                    self.apply_settings()
+
+                frame = np.asanyarray(color_frame.get_data())
+                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+                if getattr(config_ini, 'cam_usb_flip', [0, 0])[self.config_idx] == 1:
+                    rgb_frame = cv2.flip(rgb_frame, 1)
+
+                # Processamento por software
+                try:
+                    contrast = getattr(config_ini, 'cam_sw_contrast', [1.0, 1.0])[self.config_idx]
+                    brightness = getattr(config_ini, 'cam_sw_brightness', [0, 0])[self.config_idx]
+                    sharpen = getattr(config_ini, 'cam_sw_sharpen', [0.0, 0.0])[self.config_idx]
+                    vision_lib = pv_visionlib.pvVisionLib()
+                    rgb_frame = vision_lib.enhance_image(rgb_frame, contrast, brightness, sharpen)
+                except Exception:
+                    pass
+
+                self.updateFrame.emit(rgb_frame)
+
+        except Exception as e:
+            print(f"[RealSense] Erro no thread: {e}")
+        finally:
+            if self.pipeline:
+                try:
+                    self.pipeline.stop()
+                except Exception:
+                    pass
+            self.pipeline = None
+            self.sensor = None
 
 
 if __name__ == "__main__":

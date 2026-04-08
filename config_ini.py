@@ -14,22 +14,25 @@ app_company_logo = ""
 
 #----- Cameras ------#
 cam_qty = 2                         # Quantidade de câmeras ativas
-cam_usb_index = [ "/dev/video2", "/dev/video0"] # Índices ou caminhos dos dispositivos (ex: 0, 1, ou "/dev/video0")
-cam_usb_color = [ 1, 1]             # 1 para RGB/Colorido, 0 para Tons de cinza (Grayscale)
-cam_usb_flip = [ 0, 0]              # 1 para inverter a imagem horizontalmente, 0 para manter normal
+cam_type = ["realsense", "realsense"] # "usb" ou "realsense"
+cam_usb_index = [ 1, 0]             # USB: índices ou paths. RealSense: ignorado
+cam_rs_serial = ["", ""]            # RealSense: número de série (vazio = ordem de detecção)
+cam_usb_color = [ 1, 1]             # 1 para RGB/Colorido, 0 para Tons de cinza
+cam_usb_flip = [ 0, 0]              # 1 para inverter horizontalmente, 0 para normal
 
-cam_auto_exposure = [0, 1]
-cam_exposure = [4605, 475]
-cam_auto_wb = [ 0, 0]               # Balanço de Branco: 1 para Automático, 0 para Manual
-cam_wb_temperature = [ 4000, 4000]  # Temperatura de cor manual em Kelvin (Ex: 2800 para cores quentes, 6500 para cores frias)
-cam_auto_focus = [0, 0]
-cam_focus = [98, 300]
+cam_auto_exposure = [0, 0]          # 1 = automático, 0 = manual
+cam_exposure = [8500, 8500]         # USB: valor V4L2 (1-5000) | RealSense D455c: microssegundos (1-165000)
+cam_auto_wb = [ 0, 0]               # Balanço de Branco: 1 = Automático, 0 = Manual
+cam_wb_temperature = [ 4000, 4000]  # Temperatura de cor em Kelvin (2800-6500)
+cam_auto_focus = [0, 0]             # 1 = automático, 0 = manual
+cam_focus = [49, 241]               # USB: valor V4L2 | RealSense D455c: 0-255
+cam_rs_gain = [64, 64]              # RealSense: ganho do sensor de cor (16-248)
 
 #----- Software Image Processing -----#
 # Tratamento da imagem via software após a captura
-cam_sw_contrast = [0.9, 0.9]        # 1.0 = original, > 1.0 aumenta o contraste
-cam_sw_brightness = [0, 0]          # 0 = original, > 0 mais claro, < 0 mais escuro
-cam_sw_sharpen = [0.0, 0.0]         # 0.0 = original, > 0.0 aplica filtro de nitidez (ex: 1.0 a 3.0)
+cam_sw_contrast = [0.96, 0.48]
+cam_sw_brightness = [50, 10]
+cam_sw_sharpen = [1.61, 1.38]
 
 cam_files_path = os.path.join(_BASE_DIR, "models", "sense_chassi_19022026")
 default_roi_x = 50
