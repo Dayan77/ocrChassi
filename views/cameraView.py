@@ -19,10 +19,13 @@ import glob
 import json
 import time
 import os
+import platform
 import traceback
 import re
 from pathlib import Path
 import sys
+
+_IS_MACOS = platform.system() == "Darwin"
 from PySide6 import QtCore, QtWidgets
 from PySide6.QtCore import Qt, QThread, Signal, Slot, QDateTime, QDir
 from PySide6.QtCore import Qt, QThread, Signal, Slot, QDateTime, QDir, QObject
@@ -417,17 +420,17 @@ class CameraView(QtWidgets.QWidget):
         elif isinstance(index, int):
             device_path = f"/dev/video{index}"
             
-        if cap and cap.isOpened():
-            # Aplica via OpenCV primeiro
+        if cap and cap.isOpened() and not _IS_MACOS:
+            # Aplica via OpenCV (valores V4L2 — apenas Linux)
             auto_exp = 3 if config_ini.cam_auto_exposure[config_idx] else 1
             cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, auto_exp)
             if not config_ini.cam_auto_exposure[config_idx]:
                 cap.set(cv2.CAP_PROP_EXPOSURE, config_ini.cam_exposure[config_idx])
-            
+
             cap.set(cv2.CAP_PROP_AUTO_WB, config_ini.cam_auto_wb[config_idx])
             if not config_ini.cam_auto_wb[config_idx]:
                 cap.set(cv2.CAP_PROP_WB_TEMPERATURE, config_ini.cam_wb_temperature[config_idx])
-                
+
             cap.set(cv2.CAP_PROP_AUTOFOCUS, config_ini.cam_auto_focus[config_idx])
             if not config_ini.cam_auto_focus[config_idx]:
                 cap.set(cv2.CAP_PROP_FOCUS, config_ini.cam_focus[config_idx])
@@ -471,7 +474,7 @@ class CameraView(QtWidgets.QWidget):
         elif isinstance(device_path, int):
             v4l2_path = f"/dev/video{device_path}"
             
-        if not v4l2_path:
+        if not v4l2_path and not _IS_MACOS:
             QMessageBox.warning(self, "Erro", "O ajuste só funciona com câmeras V4L2 (ex: /dev/videoX).")
             return
 
@@ -518,7 +521,7 @@ class CameraView(QtWidgets.QWidget):
         elif isinstance(device_path, int):
             v4l2_path = f"/dev/video{device_path}"
             
-        if not v4l2_path:
+        if not v4l2_path and not _IS_MACOS:
             QMessageBox.warning(self, "Erro", "O auto ajuste só funciona com câmeras V4L2 (ex: /dev/videoX).")
             return
             
@@ -676,8 +679,11 @@ class CameraView(QtWidgets.QWidget):
         real_index = self.resolve_camera_index()
         # If not live, open camera, grab a single frame, and close
         
-        cap = cv2.VideoCapture(real_index, cv2.CAP_V4L2)
-        if not cap.isOpened():
+        if not _IS_MACOS:
+            cap = cv2.VideoCapture(real_index, cv2.CAP_V4L2)
+            if not cap.isOpened():
+                cap = cv2.VideoCapture(real_index)
+        else:
             cap = cv2.VideoCapture(real_index)
         if not cap.isOpened():
             # List available cameras to help debugging
@@ -1609,10 +1615,13 @@ class AutoAdjustWorker(QObject):
         self._run_v4l2_ctl('-c', 'white_balance_temperature_auto=0', silent=True)
         QThread.msleep(200)
         
-        cap = cv2.VideoCapture(self.device_path, cv2.CAP_V4L2)
-        if not cap.isOpened():
+        if not _IS_MACOS:
+            cap = cv2.VideoCapture(self.device_path, cv2.CAP_V4L2)
+            if not cap.isOpened():
+                cap = cv2.VideoCapture(self.device_path)
+        else:
             cap = cv2.VideoCapture(self.device_path)
-            
+
         if not cap.isOpened():
             self.finished.emit({'error': 'Não foi possível abrir a câmera.'})
             return
@@ -1732,8 +1741,11 @@ class Thread(QThread):
         
 
     def run(self):
-        self.cap = cv2.VideoCapture(self.index, cv2.CAP_V4L2)
-        if not self.cap.isOpened():
+        if not _IS_MACOS:
+            self.cap = cv2.VideoCapture(self.index, cv2.CAP_V4L2)
+            if not self.cap.isOpened():
+                self.cap = cv2.VideoCapture(self.index)
+        else:
             self.cap = cv2.VideoCapture(self.index)
         
         if self.cap.isOpened():
