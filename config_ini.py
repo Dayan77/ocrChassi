@@ -1,3 +1,7 @@
+import os
+
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 #----- Application ------#
 app_title = "Chassi Reader"
 app_theme = "light"
@@ -20,7 +24,7 @@ cam_wb_temperature = [ 4000, 4000] # Manual white balance
 cam_auto_focus = [ 0, 0]    # 1 for auto, 0 for manual
 cam_focus = [ 255, 0]         # Manual focus value (0-255)
 
-cam_files_path = "/Users/dayansantos/Dev/ocrChassi/models/sense_chassi_19022026"
+cam_files_path = os.path.join(_BASE_DIR, "models", "sense_chassi_19022026")
 default_roi_x = 50
 default_roi_y = 50
 default_roi_w = 30

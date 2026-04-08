@@ -15,7 +15,6 @@
 #     pass
 
 
-from asyncio import sleep
 import glob
 import json
 import time
@@ -248,7 +247,6 @@ class CameraView(QtWidgets.QWidget):
             self.image_path = self.images_list[self.image_index]
             print(f"Getting annotation for image index: {self.image_index} / {len(self.images_list)}")
             self.search_annotation_file(self.images_list[self.image_index])
-            sleep(100)
             self.enable_btns() #enable buttons after image is loaded
             self.ready = True
         except Exception as e:
@@ -286,7 +284,6 @@ class CameraView(QtWidgets.QWidget):
             
             print(f"Getting annotation for image index: {self.image_index} / {len(self.images_list)}")
             self.search_annotation_file(self.images_list[self.image_index])
-            sleep(100)
             print(f"Next image index: {self.image_index} / {len(self.images_list)}")
             self.label.setImage( self.load_image_path(self.images_list[self.image_index]) )
             self.image_path = self.images_list[self.image_index]
