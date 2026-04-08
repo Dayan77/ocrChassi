@@ -115,7 +115,14 @@ class CameraSettingsDialog(QDialog):
     def init_ui(self):
         layout = QVBoxLayout(self)
         import config_ini
-        
+
+        if _IS_MACOS:
+            from PySide6.QtWidgets import QLabel
+            lbl_info = QLabel("⚠️  macOS: os valores são salvos para uso no Linux.\nA câmera usa auto-exposição do sistema neste ambiente.")
+            lbl_info.setStyleSheet("color: #f9e2af; background: #313244; padding: 6px; border-radius: 4px;")
+            lbl_info.setWordWrap(True)
+            layout.addWidget(lbl_info)
+
         # --- Exposição ---
         gb_exp = QGroupBox("Exposição (Luz)")
         exp_layout = QVBoxLayout(gb_exp)
@@ -398,68 +405,70 @@ class CameraView(QtWidgets.QWidget):
         self.th = None
 
     def _apply_camera_settings(self, cap, index):
-        """Applies camera settings from config_ini to a VideoCapture object."""
+        """Applies camera settings from config_ini.
+
+        On Linux: applies V4L2 absolute values via OpenCV + v4l2-ctl (full hardware control).
+        On macOS: skips hardware control (AVFoundation uses different scale/API);
+                  the config values are preserved for correct behavior when deployed on Linux.
+        """
         import importlib
         import time
         try:
-            importlib.reload(config_ini) # Atualiza as vars com base no arquivo em tempo real
+            importlib.reload(config_ini)
         except Exception as e:
             print(f"Aviso: Falha ao recarregar config_ini.py: {e}")
 
-        # self.camera_usb_index is now the configuration index (0, 1, ...)
         config_idx = self.camera_usb_index
-
-        # Safety check: Ensure config_idx is within bounds of the setting lists
         if not isinstance(config_idx, int) or config_idx >= len(config_ini.cam_auto_exposure):
             print(f"Aviso: Índice de configuração de câmera inválido {config_idx}. Usando 0.")
             config_idx = 0
+
+        # macOS: hardware camera control via V4L2 values não é compatível com AVFoundation.
+        # A câmera usa auto-exposição do sistema. Os valores são salvos para uso no Linux.
+        if _IS_MACOS:
+            return
 
         device_path = None
         if isinstance(index, str) and index.startswith("/dev/video"):
             device_path = index
         elif isinstance(index, int):
             device_path = f"/dev/video{index}"
-            
-        if cap and cap.isOpened() and not _IS_MACOS:
-            # Aplica via OpenCV (valores V4L2 — apenas Linux)
+
+        # Aplica via OpenCV (V4L2: auto=3, manual=1)
+        if cap and cap.isOpened():
             auto_exp = 3 if config_ini.cam_auto_exposure[config_idx] else 1
             cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, auto_exp)
             if not config_ini.cam_auto_exposure[config_idx]:
                 cap.set(cv2.CAP_PROP_EXPOSURE, config_ini.cam_exposure[config_idx])
-
             cap.set(cv2.CAP_PROP_AUTO_WB, config_ini.cam_auto_wb[config_idx])
             if not config_ini.cam_auto_wb[config_idx]:
                 cap.set(cv2.CAP_PROP_WB_TEMPERATURE, config_ini.cam_wb_temperature[config_idx])
-
             cap.set(cv2.CAP_PROP_AUTOFOCUS, config_ini.cam_auto_focus[config_idx])
             if not config_ini.cam_auto_focus[config_idx]:
                 cap.set(cv2.CAP_PROP_FOCUS, config_ini.cam_focus[config_idx])
 
+        # Reforça via v4l2-ctl (Linux) — sobrescreve driver direto, mais confiável que OpenCV
         if device_path:
             import subprocess
             auto_exp = 3 if config_ini.cam_auto_exposure[config_idx] else 1
             try:
-                # Utilizamos o v4l2-ctl para forçar os parâmetros no driver USB Linux
                 subprocess.run(['v4l2-ctl', '-d', device_path, '-c', f'exposure_auto={auto_exp}'], stderr=subprocess.DEVNULL)
                 if not config_ini.cam_auto_exposure[config_idx]:
                     subprocess.run(['v4l2-ctl', '-d', device_path, '-c', f'exposure_absolute={config_ini.cam_exposure[config_idx]}'], stderr=subprocess.DEVNULL)
                     subprocess.run(['v4l2-ctl', '-d', device_path, '-c', 'exposure_auto_priority=0'], stderr=subprocess.DEVNULL)
                     subprocess.run(['v4l2-ctl', '-d', device_path, '-c', 'gain_auto=0'], stderr=subprocess.DEVNULL)
                     subprocess.run(['v4l2-ctl', '-d', device_path, '-c', 'autogain=0'], stderr=subprocess.DEVNULL)
-                
                 wb_auto = config_ini.cam_auto_wb[config_idx]
                 subprocess.run(['v4l2-ctl', '-d', device_path, '-c', f'white_balance_temperature_auto={wb_auto}'], stderr=subprocess.DEVNULL)
                 if not wb_auto:
                     subprocess.run(['v4l2-ctl', '-d', device_path, '-c', f'white_balance_temperature={config_ini.cam_wb_temperature[config_idx]}'], stderr=subprocess.DEVNULL)
-                
                 focus_auto = config_ini.cam_auto_focus[config_idx]
                 subprocess.run(['v4l2-ctl', '-d', device_path, '-c', f'focus_auto={focus_auto}'], stderr=subprocess.DEVNULL)
                 if not focus_auto:
                     subprocess.run(['v4l2-ctl', '-d', device_path, '-c', f'focus_absolute={config_ini.cam_focus[config_idx]}'], stderr=subprocess.DEVNULL)
-                
-                time.sleep(0.5) # Aguarda a lente/sensor da câmera aplicar as configurações físicas
+                time.sleep(0.5)
             except Exception as e:
-                print(f"Aviso: v4l2-ctl não funcionou ou não está instalado: {e}")
+                print(f"Aviso: v4l2-ctl não funcionou: {e}")
 
     def open_camera_settings(self):
         if self.auto_adjust_roi is not None:
@@ -679,12 +688,7 @@ class CameraView(QtWidgets.QWidget):
         real_index = self.resolve_camera_index()
         # If not live, open camera, grab a single frame, and close
         
-        if not _IS_MACOS:
-            cap = cv2.VideoCapture(real_index, cv2.CAP_V4L2)
-            if not cap.isOpened():
-                cap = cv2.VideoCapture(real_index)
-        else:
-            cap = cv2.VideoCapture(real_index)
+        cap = cv2.VideoCapture(real_index)
         if not cap.isOpened():
             # List available cameras to help debugging
             cameras = QMediaDevices.videoInputs()
@@ -1615,12 +1619,7 @@ class AutoAdjustWorker(QObject):
         self._run_v4l2_ctl('-c', 'white_balance_temperature_auto=0', silent=True)
         QThread.msleep(200)
         
-        if not _IS_MACOS:
-            cap = cv2.VideoCapture(self.device_path, cv2.CAP_V4L2)
-            if not cap.isOpened():
-                cap = cv2.VideoCapture(self.device_path)
-        else:
-            cap = cv2.VideoCapture(self.device_path)
+        cap = cv2.VideoCapture(self.device_path)
 
         if not cap.isOpened():
             self.finished.emit({'error': 'Não foi possível abrir a câmera.'})
@@ -1741,12 +1740,7 @@ class Thread(QThread):
         
 
     def run(self):
-        if not _IS_MACOS:
-            self.cap = cv2.VideoCapture(self.index, cv2.CAP_V4L2)
-            if not self.cap.isOpened():
-                self.cap = cv2.VideoCapture(self.index)
-        else:
-            self.cap = cv2.VideoCapture(self.index)
+        self.cap = cv2.VideoCapture(self.index)
         
         if self.cap.isOpened():
             self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
