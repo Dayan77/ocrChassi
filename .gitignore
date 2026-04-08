@@ -22,3 +22,6 @@ models/
 # IDE
 .vscode/
 *.pyc
+
+# macOS resource‑fork files
+._*

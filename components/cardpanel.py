@@ -172,13 +172,14 @@ class ImageSegmentationView(QFrame):
         
 
         camA_radio = QRadioButton("Camera A")
+        camA_radio.setChecked(True)
         self.camB_radio = QRadioButton("Camera B")
         cam_select = QHBoxLayout()
         
         cam_select.addWidget(camA_radio)
         cam_select.addWidget(self.camB_radio)
 
-        # layout.addLayout(cam_select)
+        layout.addLayout(cam_select)
         
         self.image_filtered = QLabel()
         self.image_filtered.setMinimumHeight(200)
@@ -186,7 +187,6 @@ class ImageSegmentationView(QFrame):
         self.image_filtered.setScaledContents(True)
         image_buttons = QHBoxLayout()
         image_buttons.addWidget(self.image_filtered)
-        image_buttons.addLayout(image_buttons)
 
         buttons = QVBoxLayout()
         test_button = QPushButton("Segmentação")
@@ -549,14 +549,27 @@ class ImageSegmentationView(QFrame):
 
     def refresh_rois_listview(self):
         self.list_segmentation_results.list_widget.clear()
-        samples = self.parent_wnd.cameras[self.cam_index].refresh_rois(self.alphabet_chars.text())
+        camera = self.parent_wnd.cameras[self.cam_index]
+        
+        # Draw ROI boxes from the annotation data
+        try:
+            if camera.annotation_data:
+                # clear existing ROIs and draw new ones from annotation
+                if len(camera.rois) > 0:
+                    camera.delete_all_rois(camera.rois)
+                camera.draw_rois_dict(camera.annotation_data)
+        except Exception as e:
+            print(f"Error drawing annotation boxes during refresh: {e}")
+        
+        # Populate the sample list with character regions
+        samples = camera.refresh_rois(self.alphabet_chars.text())
 
         if samples:
             for index, item in samples.items():
                 img_cv = self.updateCV_Image(item["image"])
                 self.list_segmentation_results.add_list_item(img_cv, item["char"])
 
-        self.alphabet_chars.setText(self.parent_wnd.cameras[self.cam_index].image_chars)
+        self.alphabet_chars.setText(camera.image_chars)
 
 
     def export_rois_list(self):

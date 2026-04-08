@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=OCR Chassis
+Comment=Optical Character Recognition training and inference application
+Exec=/home/sense-bike/Área de trabalho/ocrChassi/ocrChassi.sh
+Path=/home/sense-bike/Área de trabalho/ocrChassi
+Icon=document-properties
+Terminal=false
+Categories=Utility;Graphics;
+StartupNotify=true

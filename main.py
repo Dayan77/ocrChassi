@@ -24,6 +24,7 @@ class MainWindow(QMainWindow):
 
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
+        self.ui.stackedWidget.currentChanged.connect(self.on_stackedWidget_currentChanged)
 
         self.ui.icon_only_widget.hide()
         
@@ -121,6 +122,20 @@ class MainWindow(QMainWindow):
                 btn.setChecked(False)
             else:
                 btn.setAutoExclusive(True)
+        
+        # Handle InspectionView camera lifecycle
+        if self.inspection_view:
+            if index != 4: # Leaving Production/Inspection page
+                if hasattr(self.inspection_view, "shutdown"):
+                    self.inspection_view.shutdown()
+                elif hasattr(self.inspection_view, "close_cameras"):
+                    self.inspection_view.close_cameras()
+        
+        # Handle ProgramView lifecycle
+        if self.program_view:
+            if index != 1: # Leaving Dashboard/Modelos page
+                if hasattr(self.program_view, "shutdown"):
+                    self.program_view.shutdown()
             
     ## functions for changing menu page
     @Slot(bool)
@@ -134,6 +149,10 @@ class MainWindow(QMainWindow):
     @Slot(bool)
     def on_dashboard_btn_1_toggled(self, checked=True):  # Used by .clicked in sidebar_ui.py too
         if checked:
+            # Explicitly shutdown InspectionView if we are currently on it to prevent resource conflicts
+            if self.ui.stackedWidget.currentIndex() == 4 and self.inspection_view:
+                self.inspection_view.shutdown()
+
             # Lazy load the ProgramView
             if not self.program_view:
                 self.program_view = ProgramView(self.width() - 90, self.height() - 70)
@@ -146,6 +165,9 @@ class MainWindow(QMainWindow):
     @Slot(bool)
     def on_dashboard_btn_2_toggled(self, checked=True):
         if checked:
+            if self.ui.stackedWidget.currentIndex() == 4 and self.inspection_view:
+                self.inspection_view.shutdown()
+
             if not self.program_view:
                 self.program_view = ProgramView(self.width() - 90, self.height() - 70)
                 self.program_view.create_views(config_ini.cam_qty)
@@ -173,16 +195,23 @@ class MainWindow(QMainWindow):
     @Slot(bool)
     def on_customers_btn_toggled(self, checked=True):
         if checked:
+            if self.program_view:
+                self.program_view.shutdown()
+
             if not self.inspection_view:
                 self.inspection_view = InspectionView()
                 self.ui.stackedWidget.removeWidget(self.page_customers)
                 self.ui.stackedWidget.insertWidget(4, self.inspection_view)
                 self.page_customers = self.inspection_view
+            else:
+                self.inspection_view.initialize_cameras()
             self.ui.stackedWidget.setCurrentIndex(4)
 
     def closeEvent(self, event):
         if self.inspection_view:
             self.inspection_view.shutdown()
+        if self.program_view:
+            self.program_view.shutdown()
         event.accept()
 
     

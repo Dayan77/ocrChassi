@@ -45,14 +45,12 @@ class TrainingSummaryView(QWidget):
         self.encoder_path_edit.setFixedWidth(400)
         self.encoder_path_edit.setReadOnly(True)
 
-        self.library_select = QComboBox()
-        self.library_select.addItems(["TensorFlow", "PyTorch", "EasyOCR"])
-
+        # we no longer allow selecting a training library in the UI;
+        # training will always use PyTorch.
         config_layout.addRow("Nome do Modelo:", self.model_name_label)
         config_layout.addRow("Épocas de Treinamento:", self.epochs_label)
         config_layout.addRow("Dimensões da Imagem:", self.image_size_label)
         config_layout.addRow("Arquivo do Codificador:", self.encoder_path_edit)
-        config_layout.addRow("Biblioteca de Treino:", self.library_select)
 
         # --- Dataset Summary Group ---
         dataset_group = QGroupBox("Sumário do Dataset")
@@ -181,7 +179,8 @@ class TrainingSummaryView(QWidget):
             self.total_images_label.setText("N/A")
 
     def on_start_clicked(self):
-        selected_lib = self.library_select.currentText()
+        # always use PyTorch internally; hide other options from the UI
+        selected_lib = "PyTorch"
         print(f"DEBUG: TrainingSummaryView emitting startTrainingClicked with '{selected_lib}'")
         self.startTrainingClicked.emit(selected_lib)
 

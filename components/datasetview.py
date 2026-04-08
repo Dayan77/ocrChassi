@@ -355,26 +355,58 @@ class DatasetView(QWidget):
         ret = msg_box.exec()
 
         if ret == QMessageBox.StandardButton.Apply:
+            path_mapping = {}
             # Perform moves first so paths are correct for flips if moved
             for move in self.pending_moves:
-                if os.path.exists(move['source']):
-                    os.rename(move['source'], move['destination'])
+                src = move['source']
+                dst = move['destination']
+                if os.path.exists(src):
+                    os.rename(src, dst)
+                    path_mapping[src] = dst
+                    
+                    # Move o arquivo JSON de anotação correspondente, se existir
+                    json_src = src + ".json"
+                    json_dst = dst + ".json"
+                    if os.path.exists(json_src):
+                        os.rename(json_src, json_dst)
             
             # Perform flips
             for file_path in self.pending_flips:
+                # Atualiza o caminho se o arquivo foi movido nesta mesma operação
+                file_path = path_mapping.get(file_path, file_path)
                 if os.path.exists(file_path):
                     try:
                         img = cv2.imread(file_path)
                         if img is not None:
+                            img_h, img_w = img.shape[:2]
                             img = cv2.flip(img, 1)
                             cv2.imwrite(file_path, img)
+                            
+                            # Atualiza as anotações JSON para refletir o espelhamento
+                            json_path = file_path + ".json"
+                            if os.path.exists(json_path):
+                                with open(json_path, 'r') as f:
+                                    annotations = json.load(f)
+                                for roi_id, data in annotations.items():
+                                    box = data.get('box')
+                                    if box:
+                                        # Inverte a coordenada X da caixa (x = largura_total - x_antigo - largura_caixa)
+                                        box['x'] = img_w - box['x'] - box['w']
+                                with open(json_path, 'w') as f:
+                                    json.dump(annotations, f, indent=4)
                     except Exception as e:
                         print(f"Error flipping image {file_path}: {e}")
 
             # Perform deletions
             for file_path in self.pending_deletions:
+                file_path = path_mapping.get(file_path, file_path)
                 if os.path.exists(file_path):
                     os.remove(file_path)
+                
+                # Deleta também o JSON correspondente, se existir
+                json_path = file_path + ".json"
+                if os.path.exists(json_path):
+                    os.remove(json_path)
             
             self.pending_deletions.clear()
             self.pending_moves.clear()
@@ -536,6 +568,10 @@ class DatasetView(QWidget):
                 # return False
 
         os.makedirs(destination_path, exist_ok=True)
+        # create empty folders for all alphanumeric characters so that trainers see consistent structure
+        default_chars = [str(i) for i in range(10)] + [chr(c) for c in range(ord('A'), ord('Z')+1)]
+        for ch in default_chars:
+            os.makedirs(os.path.join(destination_path, ch), exist_ok=True)
 
         # --- Load detector model ---
         try:
@@ -548,6 +584,8 @@ class DatasetView(QWidget):
         visionlib = vision_lib.pvVisionLib()
         img_h, img_w = model_data.image_height, model_data.image_width
         count = 0
+        from collections import defaultdict
+        class_counts = defaultdict(int)
 
         for filename in os.listdir(source_path):
             if not filename.lower().endswith(('.png', '.jpg', '.jpeg')):
@@ -571,9 +609,10 @@ class DatasetView(QWidget):
             # --- Match detected boxes with annotations using IoU ---
             annotation_list = list(annotations.values())
 
+            # track how many samples are generated per class (do not reset per image)
             for i, detected_box in enumerate(boxes):
                 best_match = None
-                highest_iou = 0.5  # Set a threshold to avoid bad matches
+                highest_iou = 0.3  # lower threshold to avoid missing annotations
 
                 for ann in annotation_list:
                     iou = self._calculate_iou(ann['box'], detected_box)
@@ -583,29 +622,53 @@ class DatasetView(QWidget):
 
                 if best_match:
                     true_char = best_match['char']
-                    if true_char == '?': continue # Skip unlabeled characters
+                    if true_char == '?':
+                        continue  # Skip unlabeled characters
 
                     x_min, y_min, x_max, y_max = map(int, detected_box)
 
                     # This is the exact same preprocessing as in InferenceView
                     char_img = gray_img[y_min:y_max, x_min:x_max]
+                    if char_img.size == 0:
+                        continue
                     h, w = char_img.shape
-                    if h > w:
-                        pad = (h - w) // 2
-                        char_img = cv2.copyMakeBorder(char_img, 0, 0, pad, pad, cv2.BORDER_CONSTANT, value=[0])
-                    elif w > h:
-                        pad = (w - h) // 2
-                        char_img = cv2.copyMakeBorder(char_img, pad, pad, 0, 0, cv2.BORDER_CONSTANT, value=[0])
-                    
-                    resized_char = cv2.resize(char_img, (img_w, img_h), interpolation=cv2.INTER_AREA)
+                    min_size = 128
+                    # If either dimension is not 128, scale to 128x128 without cropping
+                    if h != min_size or w != min_size:
+                        resized_char = cv2.resize(char_img, (min_size, min_size), interpolation=cv2.INTER_AREA)
+                    else:
+                        resized_char = char_img
+                    # contrast enhancement
+                    try:
+                        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+                        resized_char = clahe.apply(resized_char)
+                    except Exception:
+                        pass
 
                     class_folder = os.path.join(destination_path, true_char)
                     os.makedirs(class_folder, exist_ok=True)
                     save_path = os.path.join(class_folder, f"{os.path.splitext(filename)[0]}_char_{i}.png")
                     cv2.imwrite(save_path, resized_char)
                     count += 1
+                    class_counts[true_char] += 1
 
-        QMessageBox.information(parent_widget, "Success", f"Recognition dataset prepared successfully.\n{count} character images were created.")
+            # summary for this image (optional debug)
+            if class_counts:
+                # per-image summary already printed above
+                pass
+        # after processing all files, report class counts
+        if class_counts:
+            missing = []
+            default_chars = [str(i) for i in range(10)] + [chr(c) for c in range(ord('A'), ord('Z')+1)]
+            for c in default_chars:
+                if class_counts.get(c, 0) == 0:
+                    missing.append(c)
+            summary = f"Total characters: {count}.\nCounts per class: {dict(class_counts)}"
+            if missing:
+                summary += f"\nMissing classes: {missing}"
+        else:
+            summary = f"Total characters: {count}. No characters were extracted."
+        QMessageBox.information(parent_widget, "Success", f"Recognition dataset prepared successfully.\n{summary}")
         return True
 
     def prepare_easyocr_dataset(self, source_path, destination_path, parent_widget=None):

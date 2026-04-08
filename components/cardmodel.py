@@ -185,7 +185,8 @@ class ModelView(QFrame):
         scroll_inference_view.setWidget(self.inference_view)
         inference_tab_layout.addWidget(scroll_inference_view)
         # Connect a signal to notify InferenceView when a model is loaded/changed
-        self.parent_wnd.modelDataChanged.connect(self.inference_view.on_model_loaded)
+        if self.parent_wnd and hasattr(self.parent_wnd, 'modelDataChanged'):
+            self.parent_wnd.modelDataChanged.connect(self.inference_view.on_model_loaded)
         self.inference_view.on_model_loaded() # Call once at startup
 
         # --- Setup for scrollable config tab ---
@@ -223,16 +224,17 @@ class ModelView(QFrame):
         model_data = self.parent_wnd.model_json.model
         self.training_summary_view.update_summary(model_data, dataset_summary)
 
-    def start_training(self, library="TensorFlow"):
-        """Slot to initiate the training process."""
-        print(f"DEBUG: CardModel.start_training called with library='{library}'")
+    def start_training(self, library="PyTorch"):
+        """Slot to initiate the training process. Always use PyTorch internally."""
+        # ignore the incoming library argument and hardcode PyTorch
+        print(f"DEBUG: CardModel.start_training forcing PyTorch (received '{library}')")
         model_data = self.parent_wnd.model_json.model
         if not model_data:
             # You might want to show a QMessageBox here
             print("No model data loaded.")
             return
         
-        dialog = TrainingProcessDialog(model_data, library, self)
+        dialog = TrainingProcessDialog(model_data, "PyTorch", self)
         dialog.trainingCompleted.connect(self.on_training_completed)
         dialog.validationTestCompleted.connect(self.on_validation_completed)
         dialog.exec()
@@ -295,6 +297,15 @@ class ModelView(QFrame):
         """Receives results from the training dialog and updates relevant views."""
         stats, class_names = result
 
+        # Ensure stats has default float values to prevent formatting errors in resultsview
+        if not stats:
+            stats = {
+                "final_accuracy": 0.0,
+                "final_loss": 0.0,
+                "final_val_accuracy": 0.0,
+                "final_val_loss": 0.0
+            }
+
         # Update the results view with stats
         self.results_view.update_training_summary(stats)
 
@@ -335,6 +346,12 @@ class ModelJsonView(QWidget):
         #buttons
         json_actions_row = QHBoxLayout()
         
+        new_model_btn = QPushButton("Novo")
+        new_model_btn.setMaximumHeight(35)
+        new_model_icon = QIcon(":icons/icons/plus.svg") 
+        new_model_btn.setIcon(new_model_icon)
+        new_model_btn.clicked.connect(self.create_new_model)
+
         open_json_btn = QPushButton("Carregar")
         open_json_btn.setMaximumHeight(35)
         open_json_icon = QIcon(":icons/icons/folder.svg") 
@@ -352,6 +369,7 @@ class ModelJsonView(QWidget):
         # Style the button to be partially transparent and smaller
         save_json_btn.clicked.connect(self.save_file_json)
 
+        json_actions_row.addWidget(new_model_btn)
         json_actions_row.addWidget(open_json_btn)
         json_actions_row.addWidget(save_json_btn)
 
@@ -361,7 +379,6 @@ class ModelJsonView(QWidget):
         json_group_box = QGroupBox("Informações do modelo IA")
         # Style the QGroupBox to be partially transparent and smaller
         json_form_layout = QFormLayout()
-        json_form_layout.setFormAlignment(Qt.AlignmentFlag.AlignLeft)
         json_form_layout.setContentsMargins(0, 25, 0, 0)
         
 
@@ -492,6 +509,10 @@ class ModelJsonView(QWidget):
 
         layout.addWidget(json_group_box)
 
+        for line_edit in self.findChildren(QLineEdit):
+            line_edit.setMinimumWidth(600)
+            line_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
     
 
     def save_file_json(self):
@@ -514,8 +535,8 @@ class ModelJsonView(QWidget):
                     self.json_detectormodel_edit.text(),
                     list(self.json_classes_edit.text()), # Convert string back to list of chars
                     self.json_epochs_edit.value(),
-                    self.json_imageheight_edit.value(),
-                    self.json_imagewidth_edit.value()
+                    128,
+                    128
                 )
             else:
                 self.parent_wnd.model_json.model.model_name = self.json_modelname_edit.text()
@@ -528,8 +549,8 @@ class ModelJsonView(QWidget):
                 self.parent_wnd.model_json.model.yolo_dataset_path = self.json_yolodataset_edit.text()
                 self.parent_wnd.model_json.model.model_classes = list(self.json_classes_edit.text())
                 self.parent_wnd.model_json.model.train_epochs = self.json_epochs_edit.value()
-                self.parent_wnd.model_json.model.image_height = self.json_imageheight_edit.value()
-                self.parent_wnd.model_json.model.image_width = self.json_imagewidth_edit.value()
+                self.parent_wnd.model_json.model.image_height = 128
+                self.parent_wnd.model_json.model.image_width = 128
 
             if self.parent_wnd.model_json.save_to_file(self.json_filename_edit.text()):
                 QMessageBox.information(self, "Sucesso", "Arquivo JSON salvo com sucesso!")
@@ -635,6 +656,61 @@ class ModelJsonView(QWidget):
         self.json_epochs_edit.setValue(int(self.parent_wnd.model_json.model.train_epochs))
         self.json_imageheight_edit.setValue(int(self.parent_wnd.model_json.model.image_height))
         self.json_imagewidth_edit.setValue(int(self.parent_wnd.model_json.model.image_width))
+
+    def create_new_model(self):
+        from PySide6.QtWidgets import QInputDialog
+        model_name, ok = QInputDialog.getText(self, "Novo Modelo", "Digite o nome do novo modelo:")
+        if ok and model_name:
+            # Create a base folder for the new model
+            base_dir = Path.cwd() / "models" / model_name
+            
+            try:
+                base_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Setup subdirectories
+                annotation_dir = base_dir / "annotations"
+                train_dir = base_dir / "train"
+                test_dir = base_dir / "test"
+                yolo_dir = base_dir / "yolo"
+                
+                annotation_dir.mkdir(exist_ok=True)
+                train_dir.mkdir(exist_ok=True)
+                test_dir.mkdir(exist_ok=True)
+                yolo_dir.mkdir(exist_ok=True)
+                
+                # Set up file paths
+                json_filename = base_dir / f"{model_name}.json"
+                encoder_filename = base_dir / f"{model_name}_encoder.pkl"
+                detector_path = base_dir / "detector.pt" # Example default path
+                
+                # Use the model_json object's built-in create_model to instantiate
+                if self.parent_wnd.model_json:
+                    self.parent_wnd.model_json.create_model(
+                        model_name=model_name,
+                        model_filename=str(json_filename),
+                        encoder_filename=str(encoder_filename),
+                        model_train_dataset=str(train_dir),
+                        model_test_dataset=str(test_dir),
+                        yolo_dataset_path=str(yolo_dir),
+                        annotation_dataset_path=str(annotation_dir),
+                        detector_model_path=str(detector_path),
+                        # initialize with the full alphanumeric set
+                        model_classes=[str(i) for i in range(10)] + [chr(c) for c in range(ord('A'), ord('Z')+1)], 
+                        train_epochs=50,
+                        image_height=224,
+                        image_width=224
+                    )
+                    
+                    # Save to file immediately so it exists
+                    self.parent_wnd.model_json.save_to_file(str(json_filename))
+                    
+                    # Reflect the new values into the UI
+                    self.update_json_values()
+                    
+                    QMessageBox.information(self, "Sucesso", f"Modelo '{model_name}' criado e pastas geradas com sucesso em:\n{base_dir}")
+                
+            except Exception as e:
+                QMessageBox.critical(self, "Erro", f"Erro ao criar diretórios/arquivos para o novo modelo:\n{e}")
 
          
     

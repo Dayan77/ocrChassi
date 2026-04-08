@@ -192,6 +192,15 @@ class pvVisionLib():
         print(f"Saved {len(characters)} character samples to {output_dir}")
         return samples
     
+    def enhance_image(self, img, contrast=1.0, brightness=0, sharpen=0.0):
+        """Applies contrast, brightness and sharpening to an image using OpenCV."""
+        enhanced = img
+        if contrast != 1.0 or brightness != 0:
+            enhanced = cv2.convertScaleAbs(enhanced, alpha=contrast, beta=brightness)
+        if sharpen > 0.0:
+            blur = cv2.GaussianBlur(enhanced, (0, 0), 3)
+            enhanced = cv2.addWeighted(enhanced, 1.0 + sharpen, blur, -sharpen, 0)
+        return enhanced
     
         
         

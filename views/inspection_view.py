@@ -1,6 +1,7 @@
 import sys
 import os
 import json
+import re
 from datetime import datetime
 from PySide6.QtWidgets import (
     QApplication,
@@ -15,12 +16,13 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QFileDialog,
+    QMessageBox,
 )
 from PySide6.QtGui import QPixmap, QFont, QImage
+from PySide6.QtMultimedia import QMediaDevices
 from PySide6.QtCore import Qt, QTimer, QThread, Signal, QObject
 import cv2
 import numpy as np
-import tensorflow as tf
 from pv_visionlib import pvVisionLib
 
 try:
@@ -98,9 +100,24 @@ class InferenceWorker(QObject):
             
             elif self.detector_model:
                 # YOLO + Recognition
-                results = self.detector_model(frame, verbose=False)
-                boxes = results[0].boxes.xyxy.cpu().numpy()
-                boxes = sorted(boxes, key=lambda x: x[0])
+                try:
+                    det_kwargs = {'verbose': False}
+                    if self.device is not None:
+                        det_kwargs['device'] = str(self.device)
+                    results = self.detector_model(frame, **det_kwargs)
+                except Exception as e:
+                    msg = str(e)
+                    if 'torchvision::nms' in msg and 'CUDA' in msg:
+                        print("CUDA backend failed for YOLO, retrying on CPU.")
+                        results = self.detector_model(frame, verbose=False, device='cpu')
+                    else:
+                        print(f"YOLO inference error: {e}")
+                        results = None
+                if not results:
+                    boxes = []
+                else:
+                    boxes = results[0].boxes.xyxy.cpu().numpy()
+                    boxes = sorted(boxes, key=lambda x: x[0])
                 
                 img_h = int(self.model_data.get('image_height', 64))
                 img_w = int(self.model_data.get('image_width', 64))
@@ -122,26 +139,16 @@ class InferenceWorker(QObject):
                     if h > w:
                         pad = (h - w) // 2
                         gray = cv2.copyMakeBorder(gray, 0, 0, pad, pad, cv2.BORDER_CONSTANT, value=[0])
-                    elif w > h:
-                        pad = (w - h) // 2
-                        gray = cv2.copyMakeBorder(gray, pad, pad, 0, 0, cv2.BORDER_CONSTANT, value=[0])
-                    
-                    resized = cv2.resize(gray, (img_w, img_h), interpolation=cv2.INTER_AREA)
+                    # Scale image to (img_w, img_h) without cropping or padding
+                    if gray.shape[0] != img_h or gray.shape[1] != img_w:
+                        resized = cv2.resize(gray, (img_w, img_h), interpolation=cv2.INTER_AREA)
+                    else:
+                        resized = gray
                     normalized = resized / 255.0
                     
                     char_text = "?"
                     conf_val = 0.0
-                    if self.library == "TensorFlow" and self.recognition_model:
-                        input_data = np.expand_dims(normalized, axis=0)
-                        input_data = np.expand_dims(input_data, axis=-1)
-                        pred = self.recognition_model.predict(input_data, verbose=0)
-                        idx = np.argmax(pred)
-                        conf_val = float(np.max(pred))
-                        if idx < len(class_names):
-                            char_text = class_names[idx]
-                        else:
-                            print(f"Índice previsto {idx} fora dos limites (0-{len(class_names)-1})")
-                    elif self.library == "PyTorch" and self.recognition_model and torch:
+                    if self.library == "PyTorch" and self.recognition_model and torch:
                         input_tensor = torch.from_numpy(normalized).unsqueeze(0).unsqueeze(0).float().to(self.device)
                         with torch.no_grad():
                             outputs = self.recognition_model(input_tensor)
@@ -167,6 +174,155 @@ class InferenceWorker(QObject):
         # Join multiple result strings if both cameras fired in one manual inspection
         final_text_output = " | ".join(all_results)
         self.finished.emit(final_text_output, annotated_frames_with_source, parsed_chars_by_source)
+
+class CameraCaptureThread(QThread):
+    frame_captured = Signal(int, object)
+
+    def __init__(self, cam_index, usb_index):
+        super().__init__()
+        self.cam_index = cam_index
+        self.usb_index = usb_index
+        self.running = False
+        self.frame_count = 0
+
+    def _apply_camera_settings(self, cap):
+        try:
+            import importlib
+            import time
+            try:
+                importlib.reload(config_ini) # Atualiza as vars com base no arquivo em tempo real
+            except Exception as e:
+                print(f"Aviso: Falha ao recarregar config_ini.py: {e}")
+
+            config_idx = self.cam_index
+            if config_idx >= len(config_ini.cam_auto_exposure):
+                config_idx = 0
+
+            if cap and cap.isOpened():
+                auto_exp = 3 if config_ini.cam_auto_exposure[config_idx] else 1
+                cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, auto_exp)
+                if not config_ini.cam_auto_exposure[config_idx]:
+                    cap.set(cv2.CAP_PROP_EXPOSURE, config_ini.cam_exposure[config_idx])
+                
+                cap.set(cv2.CAP_PROP_AUTO_WB, config_ini.cam_auto_wb[config_idx])
+                if not config_ini.cam_auto_wb[config_idx]:
+                    cap.set(cv2.CAP_PROP_WB_TEMPERATURE, config_ini.cam_wb_temperature[config_idx])
+                    
+                cap.set(cv2.CAP_PROP_AUTOFOCUS, config_ini.cam_auto_focus[config_idx])
+                if not config_ini.cam_auto_focus[config_idx]:
+                    cap.set(cv2.CAP_PROP_FOCUS, config_ini.cam_focus[config_idx])
+
+            device_path = None
+            if isinstance(self.usb_index, str) and self.usb_index.startswith("/dev/video"):
+                device_path = self.usb_index
+            elif isinstance(self.usb_index, int):
+                device_path = f"/dev/video{self.usb_index}"
+                
+            if device_path:
+                import subprocess
+                auto_exp = 3 if config_ini.cam_auto_exposure[config_idx] else 1
+                try:
+                    subprocess.run(['v4l2-ctl', '-d', device_path, '-c', f'exposure_auto={auto_exp}'], stderr=subprocess.DEVNULL)
+                    if not config_ini.cam_auto_exposure[config_idx]:
+                        subprocess.run(['v4l2-ctl', '-d', device_path, '-c', f'exposure_absolute={config_ini.cam_exposure[config_idx]}'], stderr=subprocess.DEVNULL)
+                        subprocess.run(['v4l2-ctl', '-d', device_path, '-c', 'exposure_auto_priority=0'], stderr=subprocess.DEVNULL)
+                        subprocess.run(['v4l2-ctl', '-d', device_path, '-c', 'gain_auto=0'], stderr=subprocess.DEVNULL)
+                        subprocess.run(['v4l2-ctl', '-d', device_path, '-c', 'autogain=0'], stderr=subprocess.DEVNULL)
+                    
+                    wb_auto = config_ini.cam_auto_wb[config_idx]
+                    subprocess.run(['v4l2-ctl', '-d', device_path, '-c', f'white_balance_temperature_auto={wb_auto}'], stderr=subprocess.DEVNULL)
+                    if not wb_auto:
+                        subprocess.run(['v4l2-ctl', '-d', device_path, '-c', f'white_balance_temperature={config_ini.cam_wb_temperature[config_idx]}'], stderr=subprocess.DEVNULL)
+                        
+                    focus_auto = config_ini.cam_auto_focus[config_idx]
+                    subprocess.run(['v4l2-ctl', '-d', device_path, '-c', f'focus_auto={focus_auto}'], stderr=subprocess.DEVNULL)
+                    if not focus_auto:
+                        subprocess.run(['v4l2-ctl', '-d', device_path, '-c', f'focus_absolute={config_ini.cam_focus[config_idx]}'], stderr=subprocess.DEVNULL)
+                
+                    time.sleep(0.5) # Aguarda a lente/sensor da câmera aplicar as configurações físicas
+                except Exception as e:
+                    print(f"Aviso: Não foi possível aplicar configurações via v4l2-ctl: {e}")
+        except Exception as e:
+            print(f"Erro ao aplicar configurações da câmera {self.cam_index}: {e}")
+
+    def run(self):
+        self.running = True
+
+        cap = cv2.VideoCapture(self.usb_index, cv2.CAP_V4L2)
+        if not cap.isOpened():
+            cap = cv2.VideoCapture(self.usb_index)
+            
+        if cap.isOpened():
+            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+            cap.set(cv2.CAP_PROP_FPS, 15)
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                
+            self._apply_camera_settings(cap)
+            for _ in range(15):
+                cap.read()
+        
+        while self.running:
+            if cap.isOpened():
+                ret, frame = cap.read()
+                if ret:
+                    self.frame_count += 1
+                    if self.frame_count % 15 == 0:
+                        try:
+                            import importlib
+                            importlib.reload(config_ini)
+                        except Exception:
+                            pass
+                    # Aplicar tratamento de imagem via software
+                    try:
+                        config_idx = self.cam_index if self.cam_index < len(getattr(config_ini, 'cam_sw_contrast', [1.0])) else 0
+                        contrast = getattr(config_ini, 'cam_sw_contrast', [1.0, 1.0])[config_idx]
+                        brightness = getattr(config_ini, 'cam_sw_brightness', [0, 0])[config_idx]
+                        sharpen = getattr(config_ini, 'cam_sw_sharpen', [0.0, 0.0])[config_idx]
+                        
+                        if contrast != 1.0 or brightness != 0:
+                            frame = cv2.convertScaleAbs(frame, alpha=contrast, beta=brightness)
+                        if sharpen > 0.0:
+                            blur = cv2.GaussianBlur(frame, (0, 0), 3)
+                            frame = cv2.addWeighted(frame, 1.0 + sharpen, blur, -sharpen, 0)
+                    except Exception as e:
+                        pass
+                        
+                    self.frame_captured.emit(self.cam_index, frame)
+                else:
+                    cap.release()
+                    QThread.msleep(200)
+                    cap = cv2.VideoCapture(self.usb_index, cv2.CAP_V4L2)
+                    if not cap.isOpened():
+                        cap = cv2.VideoCapture(self.usb_index)
+                    if cap.isOpened():
+                        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
+                        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+                        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+                        cap.set(cv2.CAP_PROP_FPS, 15)
+                        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                        self._apply_camera_settings(cap)
+                        for _ in range(15): cap.read()
+            else:
+                QThread.msleep(500)
+                cap = cv2.VideoCapture(self.usb_index, cv2.CAP_V4L2)
+                if not cap.isOpened():
+                    cap = cv2.VideoCapture(self.usb_index)
+                if cap.isOpened():
+                    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+                    cap.set(cv2.CAP_PROP_FPS, 15)
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    self._apply_camera_settings(cap)
+                    for _ in range(15): cap.read()
+        
+        if cap.isOpened():
+            cap.release()
+
+    def stop(self):
+        self.running = False
 
 
 class ZoomableLabel(QLabel):
@@ -293,7 +449,7 @@ class InspectionView(QWidget):
         self.detector_model = None
         self.recognition_model = None
         self.model_data = {}
-        self.library = "TensorFlow"
+        self.library = "PyTorch"
         self.device = None
         self.inspection_count = 0
         self.ocr_results = []
@@ -392,6 +548,21 @@ class InspectionView(QWidget):
         """)
         ctrl_header_layout.addWidget(self.redo_button)
         
+        self.save_training_button = QPushButton("Salvar p/ Treino")
+        self.save_training_button.setStyleSheet("""
+            QPushButton {
+                background-color: #89b4fa; 
+                color: #11111b; 
+                border-radius: 4px; 
+                padding: 5px 10px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #74c7ec;
+            }
+        """)
+        ctrl_header_layout.addWidget(self.save_training_button)
+        
         right_panel.addLayout(ctrl_header_layout)
         
         self.loaded_model_label = QLabel("Modelo: Nenhum")
@@ -428,14 +599,9 @@ class InspectionView(QWidget):
         self.load_stylesheet()
 
         # Camera Initialization
-        self.caps = []
-        for i in range(config_ini.cam_qty):
-            cap = cv2.VideoCapture(config_ini.cam_usb_index[i])
-            if cap.isOpened():
-                self.caps.append(cap)
-            else:
-                print(f"Erro ao abrir a câmera {i}")
-                self.caps.append(None)
+        self.camera_threads = []
+        self.latest_frames = {}
+        self.initialize_cameras()
 
         # Timer for continuous inspection
         self.inspection_timer = QTimer(self)
@@ -451,6 +617,33 @@ class InspectionView(QWidget):
         self.load_image_btn1.clicked.connect(lambda: self.load_image_for_view(0))
         self.load_image_btn2.clicked.connect(lambda: self.load_image_for_view(1))
         self.redo_button.clicked.connect(self.redo_inference)
+        self.save_training_button.clicked.connect(self.save_to_training_folder)
+
+    def initialize_cameras(self):
+        # Check if threads are already running to avoid blocking re-initialization
+        if self.camera_threads and len(self.camera_threads) == config_ini.cam_qty:
+            if all(t.isRunning() for t in self.camera_threads):
+                return
+
+        # Release existing cameras if any
+        self.close_cameras()
+        self.camera_threads = []
+        self.latest_frames = {}
+        
+        for i in range(config_ini.cam_qty):
+            if i >= len(config_ini.cam_usb_index):
+                break
+            
+            # Passa a string exata do dispositivo ou o número diretamente para o OpenCV
+            usb_index = config_ini.cam_usb_index[i]
+
+            thread = CameraCaptureThread(i, usb_index)
+            thread.frame_captured.connect(self.on_frame_captured)
+            thread.start()
+            self.camera_threads.append(thread)
+
+    def on_frame_captured(self, cam_index, frame):
+        self.latest_frames[cam_index] = frame
 
     def redo_inference(self):
         # Clear main screen result box, keep history intact
@@ -471,14 +664,25 @@ class InspectionView(QWidget):
             
         self.run_inference_on_frames(frames_with_source)
 
+    def close_cameras(self):
+        for thread in self.camera_threads:
+            thread.stop()
+        
+        for thread in self.camera_threads:
+            thread.wait(3000)
+            thread.deleteLater()
+        self.camera_threads = []
+
     def shutdown(self):
         self.inspection_timer.stop()
-        if hasattr(self, 'thread') and self.thread.isRunning():
-            self.thread.quit()
-            self.thread.wait()
-        for cap in self.caps:
-            if cap:
-                cap.release()
+        if hasattr(self, 'thread'):
+            try:
+                if self.thread.isRunning():
+                    self.thread.quit()
+                    self.thread.wait()
+            except RuntimeError:
+                pass
+        self.close_cameras()
 
     def load_stylesheet(self):
         try:
@@ -508,22 +712,27 @@ class InspectionView(QWidget):
                 if hasattr(config_ini, 'production_model_library'):
                     self.library = config_ini.production_model_library
                 else:
-                    self.library = self.model_data.get('production_model_library', 'TensorFlow')
+                    self.library = self.model_data.get('production_model_library', 'PyTorch')
                 
                 # Load Detector
                 detector_path = self.model_data.get('detector_model_path')
                 if detector_path and os.path.exists(detector_path):
                     if YOLO:
                         self.detector_model = YOLO(detector_path)
+                        # choose device (cuda if available) and move model
+                        if torch and torch.cuda.is_available():
+                            self.device = torch.device("cuda")
+                        else:
+                            self.device = torch.device("cpu")
+                        try:
+                            self.detector_model.to(self.device)
+                        except Exception:
+                            pass
                     else:
                         print("YOLO not installed.")
                 
                 # Load Recognition
-                if self.library == 'TensorFlow':
-                    rec_path = self.model_data.get('encoder_filename')
-                    if rec_path and os.path.exists(rec_path):
-                        self.recognition_model = tf.keras.models.load_model(rec_path, compile=False)
-                elif self.library == 'PyTorch':
+                if self.library == 'PyTorch':
                     rec_path = self.model_data.get('encoder_filename')
                     if rec_path:
                         base, _ = os.path.splitext(rec_path)
@@ -536,8 +745,17 @@ class InspectionView(QWidget):
                             h = int(self.model_data.get('image_height', 64))
                             w = int(self.model_data.get('image_width', 64))
                             self.recognition_model = SimpleCNN(num_classes, h, w).to(self.device)
-                            self.recognition_model.load_state_dict(torch.load(rec_path, map_location=self.device))
-                            self.recognition_model.eval()
+                            from components.models import load_pytorch_model_with_class_mismatch_handling
+                            success, message, requires_retraining = load_pytorch_model_with_class_mismatch_handling(
+                                self.recognition_model, rec_path, self.device, num_classes
+                            )
+                            if success:
+                                self.recognition_model.eval()
+                                if requires_retraining:
+                                    print(f"Aviso: {message}")
+                            else:
+                                print(f"Erro ao carregar modelo: {message}")
+                                self.recognition_model = None
 
                 model_name = self.model_data.get('model_name', os.path.basename(file_path))
                 self.setWindowTitle(f"Inspeção Automática - {model_name}")
@@ -590,28 +808,42 @@ class InspectionView(QWidget):
     def run_manual_inspection(self):
         # Get frames from cameras
         frames_with_source = []
-        for i, cap in enumerate(self.caps):
-            if cap and cap.isOpened():
-                ret, frame = cap.read()
-                if ret:
-                    if i == 0 and getattr(config_ini, 'production_cam1_flip', False):
-                        frame = cv2.flip(frame, 1)
-                    elif i == 1 and getattr(config_ini, 'production_cam2_flip', False):
-                        frame = cv2.flip(frame, 1)
+        
+        # Wait briefly if frames are not yet available (e.g. startup)
+        for _ in range(5):
+            if len(self.latest_frames) >= config_ini.cam_qty:
+                break
+            QApplication.processEvents()
+            QThread.msleep(50)
 
-                    frames_with_source.append((frame.copy(), i))
-                    pixmap = self.convert_cv_to_pixmap(frame)
-                    if i == 0:
-                        self.cam1_raw_frame = frame.copy()
-                        self.update_camera_view(self.cam1_view, pixmap)
-                    elif i == 1:
-                        self.cam2_raw_frame = frame.copy()
-                        self.update_camera_view(self.cam2_view, pixmap)
-            else:
-                print(f"Erro ao abrir a câmera {i}")
+        # 3. Process captured frames
+        for i in range(config_ini.cam_qty):
+            if i not in self.latest_frames:
+                continue
+                
+            frame = self.latest_frames[i]
+            
+            if i == 0 and getattr(config_ini, 'production_cam1_flip', False):
+                frame = cv2.flip(frame, 1)
+            elif i == 1 and getattr(config_ini, 'production_cam2_flip', False):
+                frame = cv2.flip(frame, 1)
+
+            frames_with_source.append((frame.copy(), i))
+            pixmap = self.convert_cv_to_pixmap(frame)
+            if i == 0:
+                self.cam1_raw_frame = frame.copy()
+                self.update_camera_view(self.cam1_view, pixmap)
+            elif i == 1:
+                self.cam2_raw_frame = frame.copy()
+                self.update_camera_view(self.cam2_view, pixmap)
 
         if not frames_with_source:
-            print("Não foi possível capturar imagens das câmeras.")
+            if not self.inspection_timer.isActive():
+                cameras = QMediaDevices.videoInputs()
+                cam_list = "\n".join([f"- {cam.description()} ({cam.id().data().decode()})" for cam in cameras])
+                QMessageBox.warning(self, "Camera Error", f"Não foi possível capturar imagens das câmeras.\n\nAvailable cameras:\n{cam_list}")
+            else:
+                print("Não foi possível capturar imagens das câmeras.")
             return
         
         self.run_inference_on_frames(frames_with_source)
@@ -666,6 +898,32 @@ class InspectionView(QWidget):
                 part1 = "".join(c for c, conf in cam1_chars[:k1])
                 part2 = "".join(c for c, conf in cam2_chars[L2-k2:]) if k2 > 0 else ""
                 final_string = part1 + part2
+
+        # Aplica a máscara de formatação (A=Letra, 9=Número, #=Qualquer)
+        try:
+            import importlib
+            importlib.reload(config_ini)
+        except Exception:
+            pass
+            
+        pattern = getattr(config_ini, 'production_serial_pattern', "").upper()
+        if pattern and final_string and "|" not in final_string:
+            corrected_string = ""
+            for char, p in zip(final_string, pattern):
+                if p == 'A':
+                    fixes = {'0':'O', '1':'I', '2':'Z', '5':'S', '6':'G', '7':'T', '8':'B'}
+                    corrected_string += fixes.get(char, char)
+                elif p == '9':
+                    fixes = {'O':'0', 'Q':'0', 'D':'0', 'I':'1', 'L':'1', 'Z':'2', 'S':'5', 'B':'8', 'G':'6', 'T':'7'}
+                    corrected_string += fixes.get(char, char)
+                else:
+                    corrected_string += char
+            
+            # Acrescenta qualquer caractere excedente caso o serial lido seja maior que a máscara
+            if len(final_string) > len(pattern):
+                corrected_string += final_string[len(pattern):]
+                
+            final_string = corrected_string
 
         display_text = final_string if final_string else characters_output
         if not display_text.strip():
@@ -723,3 +981,64 @@ class InspectionView(QWidget):
             rgb_image.data, w, h, bytes_per_line, QImage.Format_RGB888
         )
         return QPixmap.fromImage(convert_to_Qt_format).copy() # return isolated copy
+
+    def save_to_training_folder(self):
+        try:
+            import importlib
+            importlib.reload(config_ini)
+        except Exception:
+            pass
+            
+        folder = getattr(config_ini, 'production_training_folder', "dataset/treino_chassi")
+        
+        # Forçar para caminho absoluto para garantir que a pasta seja criada no local exato e visível
+        folder = os.path.abspath(folder)
+        
+        if not os.path.exists(folder):
+            try:
+                os.makedirs(folder, exist_ok=True)
+            except Exception as e:
+                QMessageBox.warning(self, "Erro", f"Não foi possível criar a pasta de treino:\n{folder}\nErro: {e}")
+                return
+                
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        saved = 0
+        erros = []
+        
+        if self.cam1_raw_frame is not None:
+            path1 = os.path.join(folder, f"imagem_train_{timestamp}_cam1.png")
+            success1, buffer1 = cv2.imencode('.png', self.cam1_raw_frame)
+            if success1:
+                try:
+                    with open(path1, 'wb') as f:
+                        f.write(buffer1.tobytes())
+                    saved += 1
+                except Exception as e:
+                    erros.append(f"Erro Python Cam 1: {e}")
+            else:
+                erros.append("Falha OpenCV ao encodar Cam 1.")
+            
+        if self.cam2_raw_frame is not None:
+            path2 = os.path.join(folder, f"imagem_train_{timestamp}_cam2.png")
+            success2, buffer2 = cv2.imencode('.png', self.cam2_raw_frame)
+            if success2:
+                try:
+                    with open(path2, 'wb') as f:
+                        f.write(buffer2.tobytes())
+                    saved += 1
+                except Exception as e:
+                    erros.append(f"Erro Python Cam 2: {e}")
+            else:
+                erros.append("Falha OpenCV ao encodar Cam 2.")
+            
+        if saved > 0:
+            msg = f"{saved} imagem(ns) salva(s) com sucesso na pasta:\n{folder}"
+            if erros:
+                msg += "\n\nAvisos:\n" + "\n".join(erros)
+            print(msg)
+            QMessageBox.information(self, "Sucesso", msg)
+        else:
+            if erros:
+                QMessageBox.critical(self, "Erro ao Salvar", "\n".join(erros) + f"\n\nTentou salvar em:\n{folder}")
+            else:
+                QMessageBox.warning(self, "Aviso", "Nenhuma imagem disponível para salvar. Capture ou carregue uma imagem primeiro.")
