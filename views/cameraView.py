@@ -125,7 +125,7 @@ class CameraSettingsDialog(QDialog):
 
         if _IS_MACOS:
             from PySide6.QtWidgets import QLabel
-            lbl_info = QLabel("⚠️  macOS: os valores são salvos para uso no Linux.\nA câmera usa auto-exposição do sistema neste ambiente.")
+            lbl_info = QLabel("macOS: exposição aplicada via AVFoundation (resultado depende da câmera).\nValores salvos em escala Linux para uso correto no deploy.")
             lbl_info.setStyleSheet("color: #f9e2af; background: #313244; padding: 6px; border-radius: 4px;")
             lbl_info.setWordWrap(True)
             layout.addWidget(lbl_info)
@@ -268,9 +268,23 @@ class CameraSettingsDialog(QDialog):
             
     def _apply_exposure(self):
         val = self.sl_exposure.value()
-        import subprocess
-        subprocess.run(['v4l2-ctl', '-d', self.device_path, '-c', f'exposure_absolute={val}'], stderr=subprocess.DEVNULL)
-        subprocess.run(['v4l2-ctl', '-d', self.device_path, '-c', 'exposure_auto_priority=0'], stderr=subprocess.DEVNULL)
+        if _IS_MACOS:
+            # Aplica via OpenCV AVFoundation com mapeamento de escala
+            if self.parent() and hasattr(self.parent(), 'th') and self.parent().th:
+                cap = self.parent().th.cap
+            elif self.parent() and hasattr(self.parent(), 'capture_single_frame'):
+                cap = None  # será aplicado no próximo capture
+            else:
+                cap = None
+            if cap and cap.isOpened():
+                macos_exp = CameraView._linux_exposure_to_macos(val)
+                cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
+                cap.set(cv2.CAP_PROP_EXPOSURE, macos_exp)
+                print(f"[macOS] Exposição ao vivo: Linux={val} → macOS={macos_exp:.2f}")
+        else:
+            import subprocess
+            subprocess.run(['v4l2-ctl', '-d', self.device_path, '-c', f'exposure_absolute={val}'], stderr=subprocess.DEVNULL)
+            subprocess.run(['v4l2-ctl', '-d', self.device_path, '-c', 'exposure_auto_priority=0'], stderr=subprocess.DEVNULL)
         
     def _apply_focus(self):
         val = self.sl_focus.value()
@@ -470,12 +484,19 @@ class CameraView(QtWidgets.QWidget):
         self.isLive = False
         self.th = None
 
+    @staticmethod
+    def _linux_exposure_to_macos(linux_val, linux_min=1, linux_max=5000,
+                                  macos_min=-13.0, macos_max=0.0):
+        """Mapeia valor de exposição absoluta Linux (V4L2) para escala log do macOS (AVFoundation)."""
+        ratio = max(0.0, min(1.0, (linux_val - linux_min) / (linux_max - linux_min)))
+        return macos_min + ratio * (macos_max - macos_min)
+
     def _apply_camera_settings(self, cap, index):
         """Applies camera settings from config_ini.
 
         On Linux: applies V4L2 absolute values via OpenCV + v4l2-ctl (full hardware control).
-        On macOS: skips hardware control (AVFoundation uses different scale/API);
-                  the config values are preserved for correct behavior when deployed on Linux.
+        On macOS: tries OpenCV AVFoundation exposure control with mapped values.
+                  Config values (Linux scale) are always preserved for deploy on Linux.
         """
         import importlib
         import time
@@ -489,9 +510,21 @@ class CameraView(QtWidgets.QWidget):
             print(f"Aviso: Índice de configuração de câmera inválido {config_idx}. Usando 0.")
             config_idx = 0
 
-        # macOS: hardware camera control via V4L2 values não é compatível com AVFoundation.
-        # A câmera usa auto-exposição do sistema. Os valores são salvos para uso no Linux.
         if _IS_MACOS:
+            if not (cap and cap.isOpened()):
+                return
+            is_auto = config_ini.cam_auto_exposure[config_idx] == 1
+            if is_auto:
+                # 0.75 = AVFoundation auto exposure (valor específico do backend)
+                cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75)
+            else:
+                # 0.25 = AVFoundation manual exposure
+                cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
+                linux_exp = config_ini.cam_exposure[config_idx]
+                if isinstance(linux_exp, (int, float)):
+                    macos_exp = self._linux_exposure_to_macos(linux_exp)
+                    cap.set(cv2.CAP_PROP_EXPOSURE, macos_exp)
+                    print(f"[macOS] Exposição aplicada: Linux={linux_exp} → macOS={macos_exp:.2f}")
             return
 
         device_path = None
