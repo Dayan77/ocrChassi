@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2a2d34"/>
+      <stop offset="1" stop-color="#1a1c22"/>
+    </linearGradient>
+    <linearGradient id="lens" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fb7011"/>
+      <stop offset="1" stop-color="#c5540a"/>
+    </linearGradient>
+  </defs>
+
+  <!-- rounded square background -->
+  <rect width="256" height="256" rx="48" ry="48" fill="url(#bg)"/>
+
+  <!-- camera body -->
+  <path d="M 40 90
+           L 40 200
+           Q 40 212 52 212
+           L 204 212
+           Q 216 212 216 200
+           L 216 90
+           Q 216 78 204 78
+           L 170 78
+           L 158 60
+           L 98 60
+           L 86 78
+           L 52 78
+           Q 40 78 40 90 Z"
+        fill="none"
+        stroke="#fb7011"
+        stroke-width="8"
+        stroke-linejoin="round"/>
+
+  <!-- lens outer ring -->
+  <circle cx="128" cy="140" r="46" fill="url(#lens)" stroke="#fb7011" stroke-width="6"/>
+
+  <!-- lens inner reflection -->
+  <circle cx="128" cy="140" r="28" fill="#1a1c22"/>
+
+  <!-- OCR scan lines inside lens -->
+  <g stroke="#fb7011" stroke-width="3" stroke-linecap="round">
+    <line x1="108" y1="130" x2="148" y2="130"/>
+    <line x1="108" y1="140" x2="148" y2="140"/>
+    <line x1="108" y1="150" x2="148" y2="150"/>
+  </g>
+
+  <!-- flash indicator -->
+  <circle cx="192" cy="100" r="6" fill="#fb7011"/>
+
+  <!-- OCR label -->
+  <text x="128" y="52"
+        font-family="'DejaVu Sans', 'Arial Black', sans-serif"
+        font-weight="900"
+        font-size="30"
+        text-anchor="middle"
+        fill="#fb7011"
+        letter-spacing="4">OCR</text>
+</svg>

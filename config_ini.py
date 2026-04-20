@@ -9,17 +9,19 @@ app_company_logo = ""
 
 
 #----- Cameras ------#
-cam_qty = 2                         # Quantidade de câmeras ativas
-cam_usb_index = [ "/dev/video2", "/dev/video0"] # Índices ou caminhos dos dispositivos (ex: 0, 1, ou "/dev/video0")
-cam_usb_color = [ 1, 1]             # 1 para RGB/Colorido, 0 para Tons de cinza (Grayscale)
+cam_qty = 2                                     # Quantidade de câmeras ativas
+cam_usb_index = [0, 1]                          # Índice V4L2 OU nome da câmera (p/ "generic")
+cam_type   = ["basler", "basler"]               # "auto" | "basler" | "realsense" | "generic"
+cam_serial = ["22740654", "40287613"]           # Serial por câmera ("" = primeira encontrada)
+cam_usb_color = [ 1, 0]             # 1 para RGB/Colorido, 0 para Tons de cinza (Grayscale)
 cam_usb_flip = [ 0, 0]              # 1 para inverter a imagem horizontalmente, 0 para manter normal
 
-cam_auto_exposure = [0, 1]
-cam_exposure = [4605, 475]
+cam_auto_exposure = [1, 1]
+cam_exposure = [77, 77]
 cam_auto_wb = [ 0, 0]               # Balanço de Branco: 1 para Automático, 0 para Manual
 cam_wb_temperature = [ 4000, 4000]  # Temperatura de cor manual em Kelvin (Ex: 2800 para cores quentes, 6500 para cores frias)
 cam_auto_focus = [0, 0]
-cam_focus = [98, 300]
+cam_focus = [220, 49]
 
 #----- Software Image Processing -----#
 # Tratamento da imagem via software após a captura

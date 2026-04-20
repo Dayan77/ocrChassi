@@ -25,3 +25,19 @@ models/
 
 # macOS resource‑fork files
 ._*
+
+# Trained weights / checkpoints
+*.pth
+*.pt
+*.h5
+*.keras
+yolov8*.pt
+
+# YOLO training runs
+runs/
+
+# Datasets de treinamento (não versionar imagens/labels)
+imagens treinamento*/
+dataset/
+recog/
+ann_train/

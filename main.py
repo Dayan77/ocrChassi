@@ -1,4 +1,10 @@
 import sys
+import os
+import faulthandler
+faulthandler.enable()                                      # Imprime C traceback em segfault
+os.environ["OPENCV_LOG_LEVEL"] = "SILENT"              # Suprime avisos do OpenCV
+os.environ["OPENCV_VIDEOIO_PRIORITY_OBSENSOR"] = "0"   # Desactiva backend Orbbec depth cameras
+os.environ["QT_LOGGING_RULES"] = "qt.qpa.wayland*=false"  # Suprime avisos do Wayland
 from PySide6.QtWidgets import QMainWindow, QApplication, QPushButton, QVBoxLayout, QHBoxLayout, QGridLayout, QWidget
 from PySide6.QtCore import Slot, QFile, QTextStream, QSettings
 from PySide6.QtGui import QPalette, QColor, QIcon, QPixmap
@@ -233,6 +239,6 @@ if __name__ == "__main__":
 
 
     window = MainWindow()
-    window.show()
+    window.showMaximized()
 
     sys.exit(app.exec())

@@ -248,21 +248,18 @@ class CameraCaptureThread(QThread):
     def run(self):
         self.running = True
 
-        cap = cv2.VideoCapture(self.usb_index, cv2.CAP_V4L2)
+        from components.camera_backend import CameraFactory
+        cap = CameraFactory.create(self.cam_index)
         if not cap.isOpened():
-            cap = cv2.VideoCapture(self.usb_index)
-            
+            try:
+                cap.open()
+            except Exception as e:
+                print(f"CameraCaptureThread slot {self.cam_index}: open() erro: {e}")
         if cap.isOpened():
-            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-            cap.set(cv2.CAP_PROP_FPS, 15)
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                
-            self._apply_camera_settings(cap)
-            for _ in range(15):
+            cap.apply_settings(self.cam_index)
+            for _ in range(5):
                 cap.read()
-        
+
         while self.running:
             if cap.isOpened():
                 ret, frame = cap.read()
@@ -293,30 +290,32 @@ class CameraCaptureThread(QThread):
                 else:
                     cap.release()
                     QThread.msleep(200)
-                    cap = cv2.VideoCapture(self.usb_index, cv2.CAP_V4L2)
+                    if not self.running:
+                        break
+                    cap = CameraFactory.create(self.cam_index)
                     if not cap.isOpened():
-                        cap = cv2.VideoCapture(self.usb_index)
+                        try:
+                            cap.open()
+                        except Exception:
+                            pass
                     if cap.isOpened():
-                        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
-                        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-                        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-                        cap.set(cv2.CAP_PROP_FPS, 15)
-                        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                        self._apply_camera_settings(cap)
-                        for _ in range(15): cap.read()
+                        cap.apply_settings(self.cam_index)
+                        for _ in range(3):
+                            cap.read()
             else:
                 QThread.msleep(500)
-                cap = cv2.VideoCapture(self.usb_index, cv2.CAP_V4L2)
+                if not self.running:
+                    break
+                cap = CameraFactory.create(self.cam_index)
                 if not cap.isOpened():
-                    cap = cv2.VideoCapture(self.usb_index)
+                    try:
+                        cap.open()
+                    except Exception:
+                        pass
                 if cap.isOpened():
-                    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
-                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-                    cap.set(cv2.CAP_PROP_FPS, 15)
-                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                    self._apply_camera_settings(cap)
-                    for _ in range(15): cap.read()
+                    cap.apply_settings(self.cam_index)
+                    for _ in range(3):
+                        cap.read()
         
         if cap.isOpened():
             cap.release()
@@ -693,10 +692,11 @@ class InspectionView(QWidget):
 
     def load_model(self):
         file_path, _ = QFileDialog.getOpenFileName(
-            self,
+            self.window(),
             "Selecionar Configuração do Modelo",
             "",
-            "JSON Files (*.json)"
+            "JSON Files (*.json)",
+            options=QFileDialog.Option.DontUseNativeDialog
         )
         if file_path:
             try:

@@ -553,6 +553,8 @@ class ModelJsonView(QWidget):
                 self.parent_wnd.model_json.model.image_width = 128
 
             if self.parent_wnd.model_json.save_to_file(self.json_filename_edit.text()):
+                # Propagate to all views (enables training buttons, loads dataset, etc.)
+                self.jsonLoaded.emit(self.json_filename_edit.text())
                 QMessageBox.information(self, "Sucesso", "Arquivo JSON salvo com sucesso!")
                 return True
             else:
@@ -703,10 +705,13 @@ class ModelJsonView(QWidget):
                     
                     # Save to file immediately so it exists
                     self.parent_wnd.model_json.save_to_file(str(json_filename))
-                    
+
                     # Reflect the new values into the UI
                     self.update_json_values()
-                    
+
+                    # Propagate to all views (enables training buttons, loads dataset, etc.)
+                    self.jsonLoaded.emit(str(json_filename))
+
                     QMessageBox.information(self, "Sucesso", f"Modelo '{model_name}' criado e pastas geradas com sucesso em:\n{base_dir}")
                 
             except Exception as e:

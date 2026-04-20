@@ -426,12 +426,24 @@ class DatasetView(QWidget):
             QMessageBox.warning(parent_widget, "No Destination Path", "Please set a 'Detector Dataset (YOLO)' path in the 'Modelo' tab.")
             return False
 
+        # --- Safety: never delete source data ---
+        src_real = os.path.realpath(source_path)
+        dst_real = os.path.realpath(destination_path)
+        if src_real == dst_real or dst_real.startswith(src_real + os.sep) or src_real.startswith(dst_real + os.sep):
+            QMessageBox.critical(
+                parent_widget, "Path Conflict",
+                f"Source and destination paths overlap — refusing to delete.\n\n"
+                f"Source: {source_path}\nDestination: {destination_path}\n\n"
+                "Please set a destination folder OUTSIDE the annotation folder."
+            )
+            return False
+
         # --- Ask to clear destination folder if it exists and is not empty ---
         if os.path.exists(destination_path) and os.listdir(destination_path):
             reply = QMessageBox.question(
                 parent_widget,
                 "Clear Destination",
-                f"The destination folder '{destination_path}' is not empty.\n\n"
+                f"The destination folder is not empty:\n{destination_path}\n\n"
                 "Do you want to clear it before preparing the new dataset?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.Yes
@@ -553,19 +565,33 @@ class DatasetView(QWidget):
             QMessageBox.warning(parent_widget, "No Detector Model", "Please set a valid 'Detector Model' path.")
             return False
 
-        # --- Ask to clear destination folder ---
+        # --- Safety: never delete source data ---
+        src_real = os.path.realpath(source_path)
+        dst_real = os.path.realpath(destination_path)
+        if src_real == dst_real or dst_real.startswith(src_real + os.sep) or src_real.startswith(dst_real + os.sep):
+            QMessageBox.critical(
+                parent_widget, "Path Conflict",
+                f"Source and destination paths overlap — refusing to delete.\n\n"
+                f"Source: {source_path}\nDestination: {destination_path}\n\n"
+                "Please set a destination folder OUTSIDE the annotation folder."
+            )
+            return False
+
+        # --- Ask to clear destination folder (only generated char images) ---
         if os.path.exists(destination_path) and os.listdir(destination_path):
             reply = QMessageBox.question(
                 parent_widget, "Clear Destination",
-                f"The destination folder '{destination_path}' is not empty.\n\n"
-                "This will delete all existing images in it. Are you sure you want to continue?",
+                f"The destination folder is not empty:\n{destination_path}\n\n"
+                "Clear only the character subfolders (0-9, A-Z) inside it?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No
             )
             if reply == QMessageBox.StandardButton.Yes:
-                shutil.rmtree(destination_path)
+                for ch_dir in os.listdir(destination_path):
+                    ch_path = os.path.join(destination_path, ch_dir)
+                    if os.path.isdir(ch_path) and len(ch_dir) == 1:
+                        shutil.rmtree(ch_path)
             else:
-                QMessageBox.information(parent_widget, "Adicionado", "Imagens preparadas serão adiconadas.")
-                # return False
+                QMessageBox.information(parent_widget, "Adicionado", "Imagens preparadas serão adicionadas ao existente.")
 
         os.makedirs(destination_path, exist_ok=True)
         # create empty folders for all alphanumeric characters so that trainers see consistent structure

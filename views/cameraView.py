@@ -221,16 +221,16 @@ class CameraSettingsDialog(QDialog):
         self.done(2)
 
 class CameraView(QtWidgets.QWidget):
-    image_path = None
-    actual_image = None
     normal_pen = pg.mkPen('g', width=2)  # Verde para normal
     selected_pen = pg.mkPen('m', width=2) # Amarelo para selecionado
-    rois = []
-    annotation_data = None          # loaded JSON dict for current image
-    auto_adjust_roi = None
     def __init__(self, index):
         super().__init__()
 
+        self.image_path = None
+        self.actual_image = None
+        self.rois = []
+        self.annotation_data = None
+        self.auto_adjust_roi = None
         self.ready = False
         self.navigation_in_progress = False  # Additional lock for rapid clicks
         self.images_folder = config_ini.cam_files_path
@@ -394,6 +394,7 @@ class CameraView(QtWidgets.QWidget):
         self.filter_btn.clicked.connect(self.toggle_filter)
         self.isLive = False
         self.th = None
+        self._stopping_thread = None
 
     def _apply_camera_settings(self, cap, index):
         """Applies camera settings from config_ini to a VideoCapture object."""
@@ -643,11 +644,43 @@ class CameraView(QtWidgets.QWidget):
     def take_picture(self):
         """Captures the current frame and saves it to a file."""
         if self.isLive:
-            # If live, just stop the feed. The last frame is already in actual_image.
-            self.start_live() # Toggles it off
+            # Freeze on last displayed frame — stop stream without blocking the main thread.
+            # actual_image is already set by the last setImage() call.
+            self._stop_live_async()
         else:
-            # If not live, open camera, grab a single frame, and close
+            # Sem live: captura um frame via backend
             self.capture_single_frame()
+
+    def _stop_live_async(self):
+        """Signal the camera thread to stop without blocking the main thread.
+
+        Calling QThread destructor while the C++ thread is still running crashes
+        the process (undefined behaviour in Qt 6). This method avoids that by:
+          1. Keeping a strong Python reference to the thread via self._stopping_thread
+             so Python GC cannot collect the wrapper while the OS thread runs.
+          2. Using deleteLater() once 'finished' fires (C++ thread done) so the
+             C++ destructor is called safely from the event loop.
+        """
+        if not (self.isLive and self.th):
+            return
+        self.isLive = False
+        self.live_button.setChecked(False)
+        self.th.status = False
+        self.th.quit()
+        # Move thread reference to a temporary holder — keeps Python object alive
+        # until the C++ thread exits and deleteLater() fires.
+        self._stopping_thread = self.th
+        self.th = None
+        self._stopping_thread.finished.connect(self._on_stopping_thread_done)
+
+    @Slot()
+    def _on_stopping_thread_done(self):
+        """Slot called from the event loop after the camera thread finishes.
+        Safely schedules C++ deletion and drops the Python reference."""
+        t = getattr(self, '_stopping_thread', None)
+        if t:
+            t.deleteLater()          # Defer C++ destruction to next event tick
+            self._stopping_thread = None  # Drop Python reference (GC safe after deleteLater)
 
     def resolve_camera_index(self):
         """Resolves the configured camera index to the actual system device index."""
@@ -674,68 +707,59 @@ class CameraView(QtWidgets.QWidget):
 
     def capture_single_frame(self):
         """Opens the camera, captures a single frame, and displays it."""
-        real_index = self.resolve_camera_index()
-        # If not live, open camera, grab a single frame, and close
-        
-        cap = cv2.VideoCapture(real_index, cv2.CAP_V4L2)
-        if not cap.isOpened():
-            cap = cv2.VideoCapture(real_index)
-        if not cap.isOpened():
-            # List available cameras to help debugging
-            cameras = QMediaDevices.videoInputs()
-            cam_list = "\n".join([f"- {cam.description()} ({cam.id().data().decode()})" for cam in cameras])
-            QtWidgets.QMessageBox.warning(
-                self, 
-                "Camera Error", 
-                f"Could not open camera index {real_index} (Config: {self.camera_usb_index}).\n\nAvailable cameras:\n{cam_list}"
-            )
-            return
-        
-        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-        cap.set(cv2.CAP_PROP_FPS, 15)
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        
-        # Aplica as configurações COM o stream ativo para não serem sobrescritas
-        self._apply_camera_settings(cap, real_index)
-
-        # Descarta os quadros escuros e dá tempo ao sensor para estabilizar a luz
-        for _ in range(15):
-            cap.read()
-
+        from components.camera_backend import CameraFactory
+        config_idx = self.camera_usb_index
+        cap = None
         try:
-            config_idx = self.camera_usb_index
+            cap = CameraFactory.create(config_idx)
+            if not cap.isOpened():
+                cap.open()
+
+            if not cap.isOpened():
+                cameras = QMediaDevices.videoInputs()
+                cam_list = "\n".join([f"- {cam.description()}" for cam in cameras])
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "Camera Error",
+                    f"Não foi possível abrir a câmera (slot {config_idx}).\n\nCâmeras disponíveis:\n{cam_list}"
+                )
+                return
+
+            cap.apply_settings(config_idx)
+
+            # Descarta 2 frames para estabilizar
+            for _ in range(2):
+                cap.read()
 
             ret, frame = cap.read()
-            cap.release()
             if ret:
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                
+
                 if config_idx < len(config_ini.cam_usb_flip) and config_ini.cam_usb_flip[config_idx] == 1:
                     captured_frame = cv2.flip(rgb_frame, 1)
                 else:
                     captured_frame = rgb_frame
-                    
-                # Aplicar tratamento de imagem via software
+
                 try:
                     contrast_list = getattr(config_ini, 'cam_sw_contrast', [1.0, 1.0])
                     brightness_list = getattr(config_ini, 'cam_sw_brightness', [0, 0])
                     sharpen_list = getattr(config_ini, 'cam_sw_sharpen', [0.0, 0.0])
-                    
+
                     contrast = contrast_list[config_idx] if config_idx < len(contrast_list) else 1.0
                     brightness = brightness_list[config_idx] if config_idx < len(brightness_list) else 0
                     sharpen = sharpen_list[config_idx] if config_idx < len(sharpen_list) else 0.0
-                    
+
                     vision_lib = pv_visionlib.pvVisionLib()
                     captured_frame = vision_lib.enhance_image(captured_frame, contrast, brightness, sharpen)
                 except Exception as e:
                     print(f"Erro no tratamento de imagem: {e}")
-                    
-                self.setImage(captured_frame) # Update the view
-        except (IndexError, TypeError):
-             QMessageBox.warning(self, "Erro de Configuração", f"Índice de câmera {self.camera_usb_index} inválido em config_ini.py.")
-             cap.release()
+
+                self.setImage(captured_frame)
+        except Exception as e:
+            print(f"capture_single_frame erro: {e}")
+        finally:
+            if cap is not None:
+                cap.release()
 
     def save_picture(self):
         """Saves the currently displayed image to a file."""
@@ -1261,26 +1285,22 @@ class CameraView(QtWidgets.QWidget):
             
             self.live_button.setChecked(True)
         else:
-            self.th.status = False
-            #self.th.terminate()
-            self.th = None
-            self.live_button.setChecked(False)
-            self.isLive = False
+            self.stop_live()
             
     def stop_live(self):
         if self.isLive and self.th:
             self.th.status = False
             self.th.quit()
-            self.th.wait()
+            self.th.wait(2000)   # camera reads timeout at 500 ms, so 2 s is always enough
             self.th = None
             self.isLive = False
             self.live_button.setChecked(False)
 
-    @Slot(QImage)
+    @Slot(int)
     def runWebCam(self, idx):
         self.th.start()
 
-    @Slot(QImage)
+    @Slot(object)
     def setImage(self, frame):
         if isinstance(frame, QPixmap):
             self.label.setImage(self.load_image_path(self.image_path))
@@ -1547,11 +1567,8 @@ class CameraView(QtWidgets.QWidget):
                 except Exception as e:
                     print(f"[ROI] Warning: Error removing item {idx}: {e}")
             
-            # Step 4: Allow Qt to process the removal
-            print(f"[ROI] Step 4: Processing Qt events to finalize removal...")
-            QtCore.QCoreApplication.processEvents()
-            
-            # Step 5: Clear the list
+            # Step 4: Clear the list (no processEvents — re-entrant event processing
+            # can trigger paint/timer callbacks that dereference deleted ROIs)
             print(f"[ROI] Step 5: Clearing ROI list...")
             rois.clear()
             
@@ -1572,7 +1589,6 @@ class CameraView(QtWidgets.QWidget):
                 rois.clear()
                 self.char_list.setText("")
                 self.selected_roi = None
-                QtCore.QCoreApplication.processEvents()
             except Exception as e2:
                 print(f"[ROI] ✗ CRITICAL ERROR in error recovery: {e2}")
 
@@ -1720,7 +1736,7 @@ class AutoAdjustWorker(QObject):
         self.finished.emit({'focus': best_focus, 'exposure': best_exposure})
 
 class Thread(QThread):
-    updateFrame = Signal(np.ndarray)
+    updateFrame = Signal(object)  # np.ndarray — PySide6 uses object for non-Qt types
     width = 0
     height = 0
     index = -1
@@ -1734,28 +1750,64 @@ class Thread(QThread):
         
 
     def run(self):
-        self.cap = cv2.VideoCapture(self.index, cv2.CAP_V4L2)
-        if not self.cap.isOpened():
-            self.cap = cv2.VideoCapture(self.index)
-        
-        if self.cap.isOpened():
-            self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-            self.cap.set(cv2.CAP_PROP_FPS, 15)
-            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            
-            if self.parent() and hasattr(self.parent(), '_apply_camera_settings'):
-                self.parent()._apply_camera_settings(self.cap, self.index)
+        from components.camera_backend import CameraFactory
+        config_idx = self.parent().camera_usb_index if self.parent() else 0
+        # CameraFactory.create() já chama open() internamente quando há fallback.
+        # Para backends sem fallback (generic), ainda precisamos chamar open().
+        self.cap = CameraFactory.create(config_idx)
+        try:
+            if not self.cap.isOpened():
+                self.cap.open()
+        except Exception as e:
+            print(f"Thread: erro ao abrir câmera slot {config_idx}: {e}")
 
-            for _ in range(15):
-                self.cap.read()
-    
-        
+        if not self.cap.isOpened():
+            print(f"Thread: câmera slot {config_idx} não abriu, thread encerrada.")
+            try:
+                self.cap.release()
+            except Exception:
+                pass
+            return
+
+        self.cap.apply_settings(config_idx)
+        # Descarta os primeiros frames para estabilizar a exposição (apenas 2 para
+        # não esgotar os buffers V4L2 em câmeras UVC com buffer limitado)
+        for _ in range(2):
+            self.cap.read()
+
+        consecutive_failures = 0
+        reopen_attempts = 0
         while self.status:
             ret, frame = self.cap.read()
             if not ret:
+                consecutive_failures += 1
+                if consecutive_failures > 8:
+                    if reopen_attempts >= 3 or not self.status:
+                        print(f"Thread: câmera slot {config_idx} encerrando (tentativas={reopen_attempts}, status={self.status}).")
+                        break
+                    print(f"Thread: stream parado, tentando reabrir câmera slot {config_idx} (tentativa {reopen_attempts + 1})…")
+                    self.cap.release()
+                    # Interruptible sleep — checks status every 100 ms
+                    for _ in range(20):  # 2 s total to let camera re-initialise
+                        if not self.status:
+                            break
+                        QThread.msleep(100)
+                    if not self.status:
+                        break
+                    self.cap = CameraFactory.create(config_idx)
+                    if not self.cap.isOpened():
+                        self.cap.open()
+                    if self.cap.isOpened():
+                        self.cap.apply_settings(config_idx)
+                        for _ in range(2):
+                            self.cap.read()
+                    consecutive_failures = 0
+                    reopen_attempts += 1
+                else:
+                    QThread.msleep(10)
                 continue
+            consecutive_failures = 0
+            reopen_attempts = 0
                 
             self.frame_count += 1
             if self.frame_count % 15 == 0:
