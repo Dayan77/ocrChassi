@@ -16,6 +16,7 @@
 
 
 from asyncio import sleep
+import gc
 import glob
 import json
 import time
@@ -1037,7 +1038,14 @@ class CameraView(QtWidgets.QWidget):
 
         self.image_chars = ""
         print(f"[ROI] Starting to draw {len(rois)} ROIs...")
-        
+
+        # Pause the Python cyclic GC while constructing ROIs. pg.ROI overrides
+        # itemChange in Python; if a GC pass runs inside setParentItem during
+        # construction, it can finalize stale ROI wrappers and reenter
+        # itemChange against C++ objects that are already gone (PAC segfault).
+        gc_was_enabled = gc.isenabled()
+        gc.disable()
+
         try:
             # Step 1: Allow Qt to process any pending cleanup
             print(f"[ROI] Step 1: Processing pending Qt events...")
@@ -1137,6 +1145,10 @@ class CameraView(QtWidgets.QWidget):
                 QtCore.QCoreApplication.processEvents()
             except:
                 pass
+        finally:
+            if gc_was_enabled:
+                gc.enable()
+                gc.collect()
         
 
         
@@ -1511,7 +1523,14 @@ class CameraView(QtWidgets.QWidget):
             return
 
         print(f"[ROI] Starting deletion of {len(rois)} ROIs...")
-        
+
+        # Pause Python cyclic GC while we drop refs/remove items: dropping the
+        # last ref to a pg.ROI runs Shiboken's destructor chain, which fires
+        # itemChange on children/handles; if GC interleaves with that chain
+        # via the next ROI construction it can resurface freed wrappers.
+        gc_was_enabled = gc.isenabled()
+        gc.disable()
+
         try:
             # Step 1: Disconnect signals
             print(f"[ROI] Step 1: Disconnecting signals from {len(rois)} ROIs...")
@@ -1575,6 +1594,10 @@ class CameraView(QtWidgets.QWidget):
                 QtCore.QCoreApplication.processEvents()
             except Exception as e2:
                 print(f"[ROI] ✗ CRITICAL ERROR in error recovery: {e2}")
+        finally:
+            if gc_was_enabled:
+                gc.enable()
+                gc.collect()
 
 class AutoAdjustWorker(QObject):
     finished = Signal(dict)

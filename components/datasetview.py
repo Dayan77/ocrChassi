@@ -8,6 +8,12 @@ import cv2
 import csv
 
 import components.pv_visionlib as vision_lib
+from components.models import expand_bbox, preprocess_char_crop
+
+# Default percentage to grow each side of a detector bbox before cropping
+# for the recognition dataset. Keeps train/inference visually consistent
+# when the same default is used at inference time.
+RECOG_BBOX_PAD_PCT = 10
 
 try:
     from ultralytics import YOLO
@@ -201,48 +207,60 @@ class DatasetView(QWidget):
                     image_widgets.append(image_widget)
                     image_count += 1
             
-            if image_count > 0:
-                # --- Create a header for the class ---                
-                header_label = QLabel()
-                self.scroll_layout.addWidget(header_label)
+            # Render every class folder, even if empty — empty classes get a
+            # flagged header so the user can see imbalance at a glance.
+            header_label = QLabel()
+            self.scroll_layout.addWidget(header_label)
 
-                # --- Create a horizontal scroll area for this class's images ---
-                image_scroll_area = QScrollArea()
-                image_scroll_area.setWidgetResizable(True)
-                image_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-                image_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-                image_scroll_area.setFixedHeight(150)
+            image_scroll_area = QScrollArea()
+            image_scroll_area.setWidgetResizable(True)
+            image_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            image_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+            image_scroll_area.setFixedHeight(150)
 
-                image_container = QWidget()
-                image_layout = QHBoxLayout(image_container)
-                image_layout.setSpacing(5)
-                image_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
-                
-                for widget in image_widgets:
-                    image_layout.addWidget(widget)
+            image_container = QWidget()
+            image_layout = QHBoxLayout(image_container)
+            image_layout.setSpacing(5)
+            image_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
 
-                image_scroll_area.setWidget(image_container)
-                self.scroll_layout.addWidget(image_scroll_area)
+            for widget in image_widgets:
+                image_layout.addWidget(widget)
 
-                # Store widgets for later access
-                self.class_widgets[class_name] = {
-                    'header': header_label,
-                    'layout': image_layout,
-                    'count': image_count
-                }
-                self._update_header_label(class_name)
-                total_image_count += image_count
+            image_scroll_area.setWidget(image_container)
+            self.scroll_layout.addWidget(image_scroll_area)
+
+            self.class_widgets[class_name] = {
+                'header': header_label,
+                'layout': image_layout,
+                'count': image_count,
+            }
+            self._update_header_label(class_name)
+            total_image_count += image_count
         
         self.datasetLoaded.emit({'classes': len(self.class_widgets), 'images': total_image_count})
 
+    LOW_COUNT_THRESHOLD = 20
+
     def _update_header_label(self, class_name):
-        """Updates the text of a class header to show the image count."""
+        """Updates the text of a class header to show the image count.
+        Classes with 0 samples are flagged red; below LOW_COUNT_THRESHOLD are yellow.
+        """
         if class_name in self.class_widgets:
             widget_dict = self.class_widgets[class_name]
             count = widget_dict['count']
+            if count == 0:
+                badge_color = "#ff4d4d"
+                tag = " ⚠ vazio"
+            elif count < self.LOW_COUNT_THRESHOLD:
+                badge_color = "#f4c542"
+                tag = f" ⚠ baixo ({count} < {self.LOW_COUNT_THRESHOLD})"
+            else:
+                badge_color = "orange"
+                tag = ""
             rich_text = (
-                f"<span style='font-size: 14pt; border: 1px solid black; border-radius: 5px; padding: 2px;font-weight: bold; color: orange;'>{class_name}</span> "
-                f"<span style='font-size: 10pt; color: #cccccc;'>({count} imagens)</span>"
+                f"<span style='font-size: 14pt; border: 1px solid black; border-radius: 5px; "
+                f"padding: 2px; font-weight: bold; color: {badge_color};'>{class_name}</span> "
+                f"<span style='font-size: 10pt; color: #cccccc;'>({count} imagens){tag}</span>"
             )
             widget_dict['header'].setText(rich_text)
 
@@ -387,6 +405,8 @@ class DatasetView(QWidget):
                             if os.path.exists(json_path):
                                 with open(json_path, 'r') as f:
                                     annotations = json.load(f)
+                                if not annotations:
+                                    continue
                                 for roi_id, data in annotations.items():
                                     box = data.get('box')
                                     if box:
@@ -500,6 +520,8 @@ class DatasetView(QWidget):
                 json_path = img_path + ".json"
                 with open(json_path, 'r') as f:
                     annotations = json.load(f)
+                if not annotations:
+                    continue
 
                 img = cv2.imread(img_path)
                 if img is None: continue
@@ -554,18 +576,20 @@ class DatasetView(QWidget):
             return False
 
         # --- Ask to clear destination folder ---
+        accumulate = False  # True = append new crops; False = clean slate
         if os.path.exists(destination_path) and os.listdir(destination_path):
             reply = QMessageBox.question(
                 parent_widget, "Clear Destination",
-                f"The destination folder '{destination_path}' is not empty.\n\n"
-                "This will delete all existing images in it. Are you sure you want to continue?",
+                f"A pasta '{destination_path}' não está vazia.\n\n"
+                "Sim = apagar tudo e gerar do zero.\n"
+                "Não = manter o que já existe e ADICIONAR os novos crops "
+                "(com timestamp no nome para não sobrescrever).",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No
             )
             if reply == QMessageBox.StandardButton.Yes:
                 shutil.rmtree(destination_path)
             else:
-                QMessageBox.information(parent_widget, "Adicionado", "Imagens preparadas serão adiconadas.")
-                # return False
+                accumulate = True
 
         os.makedirs(destination_path, exist_ok=True)
         # create empty folders for all alphanumeric characters so that trainers see consistent structure
@@ -583,33 +607,67 @@ class DatasetView(QWidget):
         # --- Process each image in the source annotation folder ---
         visionlib = vision_lib.pvVisionLib()
         img_h, img_w = model_data.image_height, model_data.image_width
-        count = 0
         from collections import defaultdict
+        import time as _time
+
+        stats = {
+            'images_scanned': 0,
+            'images_processed': 0,
+            'skipped_no_json': 0,
+            'skipped_empty_json': 0,
+            'skipped_invalid_json': 0,
+            'skipped_unreadable_img': 0,
+            'detector_no_boxes': 0,
+            'crops_unmatched': 0,
+            'crops_unlabeled': 0,
+            'crops_written_new': 0,
+            'crops_overwritten': 0,
+        }
         class_counts = defaultdict(int)
+        # Unique stamp shared across this run, so all new files from this
+        # invocation share a prefix the user can spot.
+        run_stamp = _time.strftime("%Y%m%d_%H%M%S")
 
         for filename in os.listdir(source_path):
             if not filename.lower().endswith(('.png', '.jpg', '.jpeg')):
                 continue
+            stats['images_scanned'] += 1
 
             img_path = os.path.join(source_path, filename)
             json_path = img_path + ".json"
             if not os.path.exists(json_path):
+                stats['skipped_no_json'] += 1
                 continue
 
-            with open(json_path, 'r') as f:
-                annotations = json.load(f)
+            try:
+                with open(json_path, 'r') as f:
+                    annotations = json.load(f)
+            except (json.JSONDecodeError, OSError) as e:
+                print(f"[PrepRec] skipping invalid json {json_path}: {e}")
+                stats['skipped_invalid_json'] += 1
+                continue
+            if not annotations:
+                print(f"[PrepRec] skipping empty/null annotation: {json_path}")
+                stats['skipped_empty_json'] += 1
+                continue
 
             source_image = cv2.imread(img_path)
+            if source_image is None:
+                print(f"[PrepRec] skipping unreadable image: {img_path}")
+                stats['skipped_unreadable_img'] += 1
+                continue
             gray_img = visionlib.convert_to_gray(source_image)
+            stats['images_processed'] += 1
 
             # Use detector to get bounding boxes
             detection_results = detector_model(source_image, verbose=False)
             boxes = detection_results[0].boxes.xyxy.cpu().numpy()
-            
+            if len(boxes) == 0:
+                stats['detector_no_boxes'] += 1
+
             # --- Match detected boxes with annotations using IoU ---
             annotation_list = list(annotations.values())
 
-            # track how many samples are generated per class (do not reset per image)
             for i, detected_box in enumerate(boxes):
                 best_match = None
                 highest_iou = 0.3  # lower threshold to avoid missing annotations
@@ -620,55 +678,92 @@ class DatasetView(QWidget):
                         highest_iou = iou
                         best_match = ann
 
-                if best_match:
-                    true_char = best_match['char']
-                    if true_char == '?':
-                        continue  # Skip unlabeled characters
+                if not best_match:
+                    stats['crops_unmatched'] += 1
+                    continue
 
-                    x_min, y_min, x_max, y_max = map(int, detected_box)
+                true_char = best_match['char']
+                if true_char == '?':
+                    stats['crops_unlabeled'] += 1
+                    continue
 
-                    # This is the exact same preprocessing as in InferenceView
-                    char_img = gray_img[y_min:y_max, x_min:x_max]
-                    if char_img.size == 0:
-                        continue
-                    h, w = char_img.shape
-                    min_size = 128
-                    # If either dimension is not 128, scale to 128x128 without cropping
-                    if h != min_size or w != min_size:
-                        resized_char = cv2.resize(char_img, (min_size, min_size), interpolation=cv2.INTER_AREA)
-                    else:
-                        resized_char = char_img
-                    # contrast enhancement
-                    try:
-                        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-                        resized_char = clahe.apply(resized_char)
-                    except Exception:
-                        pass
+                x_min, y_min, x_max, y_max = map(int, detected_box)
+                # Add padding to mitigate detector boxes that crop characters
+                # too tightly. Same default used by InferenceView.
+                ih, iw = gray_img.shape[:2]
+                x_min, y_min, x_max, y_max = expand_bbox(
+                    x_min, y_min, x_max, y_max, ih, iw, RECOG_BBOX_PAD_PCT,
+                )
+                char_img = gray_img[y_min:y_max, x_min:x_max]
+                target_h = int(img_h) if img_h else 128
+                target_w = int(img_w) if img_w else 128
+                # Pad-to-square + resize + CLAHE — exactly what InferenceView
+                # does, so the model sees the same distribution at train and
+                # inference time.
+                resized_char = preprocess_char_crop(
+                    char_img, target_h, target_w, apply_clahe=True,
+                )
+                if resized_char is None:
+                    continue
 
-                    class_folder = os.path.join(destination_path, true_char)
-                    os.makedirs(class_folder, exist_ok=True)
-                    save_path = os.path.join(class_folder, f"{os.path.splitext(filename)[0]}_char_{i}.png")
-                    cv2.imwrite(save_path, resized_char)
-                    count += 1
-                    class_counts[true_char] += 1
+                class_folder = os.path.join(destination_path, true_char)
+                os.makedirs(class_folder, exist_ok=True)
+                base = os.path.splitext(filename)[0]
+                # Always stamp the filename so repeated runs (in either mode)
+                # produce fresh names and never silently overwrite earlier
+                # crops sitting next to them.
+                save_name = f"{base}_char_{i}_{run_stamp}.png"
+                save_path = os.path.join(class_folder, save_name)
+                already_existed = os.path.exists(save_path)
+                cv2.imwrite(save_path, resized_char)
+                if already_existed:
+                    stats['crops_overwritten'] += 1
+                else:
+                    stats['crops_written_new'] += 1
+                class_counts[true_char] += 1
 
-            # summary for this image (optional debug)
-            if class_counts:
-                # per-image summary already printed above
-                pass
-        # after processing all files, report class counts
-        if class_counts:
-            missing = []
-            default_chars = [str(i) for i in range(10)] + [chr(c) for c in range(ord('A'), ord('Z')+1)]
-            for c in default_chars:
-                if class_counts.get(c, 0) == 0:
-                    missing.append(c)
-            summary = f"Total characters: {count}.\nCounts per class: {dict(class_counts)}"
-            if missing:
-                summary += f"\nMissing classes: {missing}"
+        missing = [c for c in default_chars if class_counts.get(c, 0) == 0]
+        total_written = stats['crops_written_new'] + stats['crops_overwritten']
+        mode = "ADICIONAR (acumulando)" if accumulate else "LIMPAR e gerar do zero"
+
+        lines = [
+            f"Modo: {mode}",
+            "",
+            f"Imagens varridas: {stats['images_scanned']}",
+            f"  Processadas: {stats['images_processed']}",
+            f"  Puladas - sem JSON: {stats['skipped_no_json']}",
+            f"  Puladas - JSON vazio: {stats['skipped_empty_json']}",
+            f"  Puladas - JSON inválido: {stats['skipped_invalid_json']}",
+            f"  Puladas - imagem ilegível: {stats['skipped_unreadable_img']}",
+            "",
+            f"Crops totais escritos: {total_written}",
+            f"  Novos: {stats['crops_written_new']}",
+            f"  Sobrescritos: {stats['crops_overwritten']}",
+            f"  Detecções sem anotação correspondente: {stats['crops_unmatched']}",
+            f"  Detecções marcadas '?' (não rotuladas): {stats['crops_unlabeled']}",
+            f"  Imagens sem nenhuma detecção do YOLO: {stats['detector_no_boxes']}",
+            "",
+            f"Contagem por classe: {dict(class_counts) or '{}'}",
+        ]
+        if missing:
+            lines.append(f"Classes ainda vazias: {missing}")
+
+        summary = "\n".join(lines)
+        print(f"[PrepRec] Done.\n{summary}")
+
+        # Warning when the user thought they were appending but every crop
+        # collided with an existing filename — the clearest sign of the old
+        # overwrite bug surfacing on misuse.
+        if accumulate and stats['crops_written_new'] == 0 and stats['crops_overwritten'] > 0:
+            QMessageBox.warning(
+                parent_widget, "Nada adicionado",
+                "Nenhum crop NOVO foi adicionado — todos os nomes já existiam "
+                "na pasta destino e foram sobrescritos. Verifique se a pasta "
+                "de anotação está realmente apontando para imagens novas.\n\n"
+                + summary,
+            )
         else:
-            summary = f"Total characters: {count}. No characters were extracted."
-        QMessageBox.information(parent_widget, "Success", f"Recognition dataset prepared successfully.\n{summary}")
+            QMessageBox.information(parent_widget, "Concluído", summary)
         return True
 
     def prepare_easyocr_dataset(self, source_path, destination_path, parent_widget=None):
@@ -704,6 +799,8 @@ class DatasetView(QWidget):
 
                     with open(json_path, 'r') as f:
                         annotations = json.load(f)
+                    if not annotations:
+                        continue
 
                     img = cv2.imread(img_path)
                     if img is None: continue

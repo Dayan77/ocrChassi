@@ -1,5 +1,6 @@
 import sys
 import os
+import gc
 import json
 import re
 from datetime import datetime
@@ -46,10 +47,20 @@ import config_ini
 
 try:
     import torch
-    from components.models import SimpleCNN
+    from components.models import (
+        SimpleCNN,
+        EasyOCRCharNet,
+        expand_bbox,
+        preprocess_char_crop,
+        filter_detections,
+    )
 except ImportError:
     torch = None
     SimpleCNN = None
+    EasyOCRCharNet = None
+    expand_bbox = None
+    preprocess_char_crop = None
+    filter_detections = None
 
 class InferenceWorker(QObject):
     finished = Signal(str, list, list)
@@ -64,6 +75,20 @@ class InferenceWorker(QObject):
         self.device = device
 
     def run(self):
+        try:
+            self._run_impl()
+        except Exception as e:
+            # Guarantee we always signal completion. If inference blows up,
+            # the UI watchdog/button re-enable depends on receiving `finished`.
+            import traceback
+            print(f"[InferenceWorker] ERROR: {e}")
+            print(traceback.format_exc())
+            try:
+                self.finished.emit(f"ERRO: {e}", [], [])
+            except Exception:
+                pass
+
+    def _run_impl(self):
         all_results = [] # list to hold final string outputs to emit per source
         annotated_frames_with_source = [] # list to hold (annotated_frame, cam_index)
         parsed_chars_by_source = [] # list of (cam_index, [(char, conf), ...])
@@ -114,36 +139,59 @@ class InferenceWorker(QObject):
                         print(f"YOLO inference error: {e}")
                         results = None
                 if not results:
-                    boxes = []
+                    boxes = np.array([])
+                    confs = np.array([])
                 else:
                     boxes = results[0].boxes.xyxy.cpu().numpy()
-                    boxes = sorted(boxes, key=lambda x: x[0])
-                
+                    confs = results[0].boxes.conf.cpu().numpy() if hasattr(results[0].boxes, 'conf') else np.ones(len(boxes))
+
+                # Apply the same chain-filter the InferenceView uses so the
+                # production tela behaves consistently with the testing tela.
+                if filter_detections is not None and len(boxes) > 0:
+                    boxes = filter_detections(boxes, confs)
+                else:
+                    boxes = sorted(boxes, key=lambda x: x[0]) if len(boxes) else []
+
                 img_h = int(self.model_data.get('image_height', 64))
                 img_w = int(self.model_data.get('image_width', 64))
                 class_names = self.model_data.get('model_classes', [])
                 if not class_names:
                     print("Aviso: 'model_classes' está vazio ou não encontrado no JSON.")
-                
+
+                # Bbox padding configurado em model_data (cai em 10% — o mesmo
+                # default que a InferenceView e prepare_recognition_dataset usam).
+                bbox_pad_pct = int(self.model_data.get('bbox_pad_pct', 10))
+                gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                ih, iw = gray_frame.shape[:2]
+
                 for box in boxes:
                     x1, y1, x2, y2 = map(int, box)
-                    h_img, w_img = frame.shape[:2]
-                    x1, y1 = max(0, x1), max(0, y1)
-                    x2, y2 = min(w_img, x2), min(h_img, y2)
-                    
-                    char_img = frame[y1:y2, x1:x2]
-                    if char_img.size == 0: continue
-
-                    gray = cv2.cvtColor(char_img, cv2.COLOR_BGR2GRAY)
-                    h, w = gray.shape
-                    if h > w:
-                        pad = (h - w) // 2
-                        gray = cv2.copyMakeBorder(gray, 0, 0, pad, pad, cv2.BORDER_CONSTANT, value=[0])
-                    # Scale image to (img_w, img_h) without cropping or padding
-                    if gray.shape[0] != img_h or gray.shape[1] != img_w:
-                        resized = cv2.resize(gray, (img_w, img_h), interpolation=cv2.INTER_AREA)
+                    if expand_bbox is not None:
+                        x1, y1, x2, y2 = expand_bbox(x1, y1, x2, y2, ih, iw, bbox_pad_pct)
                     else:
-                        resized = gray
+                        x1, y1 = max(0, x1), max(0, y1)
+                        x2, y2 = min(iw, x2), min(ih, y2)
+
+                    char_img = gray_frame[y1:y2, x1:x2]
+                    if char_img.size == 0:
+                        continue
+
+                    # Mirror exactly the InferenceView / prepare_recognition_dataset
+                    # pipeline: pad-to-square + resize + CLAHE.
+                    if preprocess_char_crop is not None:
+                        resized = preprocess_char_crop(char_img, img_h, img_w, apply_clahe=True)
+                        if resized is None:
+                            continue
+                    else:
+                        # legacy fallback only if helpers missing
+                        h, w = char_img.shape
+                        if h > w:
+                            pad = (h - w) // 2
+                            char_img = cv2.copyMakeBorder(char_img, 0, 0, pad, pad, cv2.BORDER_CONSTANT, value=0)
+                        elif w > h:
+                            pad = (w - h) // 2
+                            char_img = cv2.copyMakeBorder(char_img, pad, pad, 0, 0, cv2.BORDER_CONSTANT, value=0)
+                        resized = cv2.resize(char_img, (img_w, img_h), interpolation=cv2.INTER_AREA)
                     normalized = resized / 255.0
                     
                     char_text = "?"
@@ -174,6 +222,17 @@ class InferenceWorker(QObject):
         # Join multiple result strings if both cameras fired in one manual inspection
         final_text_output = " | ".join(all_results)
         self.finished.emit(final_text_output, annotated_frames_with_source, parsed_chars_by_source)
+
+        # Release tensor caches to keep RAM/MPS pressure stable across runs
+        gc.collect()
+        if torch is not None and self.device is not None:
+            if self.device.type == "cuda":
+                torch.cuda.empty_cache()
+            elif self.device.type == "mps":
+                try:
+                    torch.mps.empty_cache()
+                except AttributeError:
+                    pass
 
 class CameraCaptureThread(QThread):
     frame_captured = Signal(int, object)
@@ -453,6 +512,11 @@ class InspectionView(QWidget):
         self.device = None
         self.inspection_count = 0
         self.ocr_results = []
+        # Re-entrancy guard: prevents the operator from triggering multiple
+        # concurrent inferences by mashing the manual button. Also stops the
+        # continuous timer from piling up workers if a tick lands while the
+        # previous one is still running.
+        self._inspection_busy = False
         
         # Cache for raw frames to be reused in Redo
         self.cam1_raw_frame = None
@@ -719,9 +783,11 @@ class InspectionView(QWidget):
                 if detector_path and os.path.exists(detector_path):
                     if YOLO:
                         self.detector_model = YOLO(detector_path)
-                        # choose device (cuda if available) and move model
+                        # choose device: cuda > mps (Apple Silicon) > cpu
                         if torch and torch.cuda.is_available():
                             self.device = torch.device("cuda")
+                        elif torch and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                            self.device = torch.device("mps")
                         else:
                             self.device = torch.device("cpu")
                         try:
@@ -740,11 +806,24 @@ class InspectionView(QWidget):
                     
                     if rec_path and os.path.exists(rec_path):
                         if torch and SimpleCNN:
-                            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+                            if torch.cuda.is_available():
+                                self.device = torch.device("cuda")
+                            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                                self.device = torch.device("mps")
+                            else:
+                                self.device = torch.device("cpu")
                             num_classes = len(self.model_data.get('model_classes', []))
                             h = int(self.model_data.get('image_height', 64))
                             w = int(self.model_data.get('image_width', 64))
-                            self.recognition_model = SimpleCNN(num_classes, h, w).to(self.device)
+                            # Pick the architecture saved with this model so
+                            # production matches what the trainer wrote.
+                            arch = (self.model_data.get('architecture') or 'SimpleCNN')
+                            if arch == 'EasyOCRCharNet' and EasyOCRCharNet is not None:
+                                model_cls = EasyOCRCharNet
+                            else:
+                                model_cls = SimpleCNN
+                            print(f"[Inspection] Building recognizer architecture={arch}")
+                            self.recognition_model = model_cls(num_classes, h, w).to(self.device)
                             from components.models import load_pytorch_model_with_class_mismatch_handling
                             success, message, requires_retraining = load_pytorch_model_with_class_mismatch_handling(
                                 self.recognition_model, rec_path, self.device, num_classes
@@ -792,6 +871,7 @@ class InspectionView(QWidget):
     def run_inference_on_frames(self, frames_with_source):
         if not self.detector_model and self.library not in ["EasyOCR", "KerasOCR"]:
             print("Modelo não carregado. Carregue um modelo primeiro.")
+            self._finish_inspection()
             return
 
         # Create and start the inference thread
@@ -806,9 +886,17 @@ class InspectionView(QWidget):
         self.thread.start()
 
     def run_manual_inspection(self):
+        # Drop duplicate triggers: rapid button clicks or a continuous-mode
+        # timer tick landing during inference would otherwise spawn parallel
+        # QThreads racing on the same model and on self.thread/self.worker.
+        if self._inspection_busy:
+            return
+        self._inspection_busy = True
+        self.manual_inspection_button.setEnabled(False)
+
         # Get frames from cameras
         frames_with_source = []
-        
+
         # Wait briefly if frames are not yet available (e.g. startup)
         for _ in range(5):
             if len(self.latest_frames) >= config_ini.cam_qty:
@@ -844,8 +932,9 @@ class InspectionView(QWidget):
                 QMessageBox.warning(self, "Camera Error", f"Não foi possível capturar imagens das câmeras.\n\nAvailable cameras:\n{cam_list}")
             else:
                 print("Não foi possível capturar imagens das câmeras.")
+            self._finish_inspection()
             return
-        
+
         self.run_inference_on_frames(frames_with_source)
 
     def update_results(self, characters_output, annotated_frames_with_source, parsed_chars_by_source):
@@ -950,6 +1039,12 @@ class InspectionView(QWidget):
                 self.update_camera_view(self.cam1_view, pixmap)
             elif source == 1:
                 self.update_camera_view(self.cam2_view, pixmap)
+
+        self._finish_inspection()
+
+    def _finish_inspection(self):
+        self._inspection_busy = False
+        self.manual_inspection_button.setEnabled(True)
 
     def toggle_continuous_inspection(self):
         if self.inspection_timer.isActive():

@@ -19,7 +19,16 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
 )
 
-from components.models import SimpleCNN, EasyOCRCharNet, CharDataset, EasyOCRDataset
+from components.models import (
+    SimpleCNN,
+    EasyOCRCharNet,
+    CharDataset,
+    EasyOCRDataset,
+    RecognitionDataset,
+    compute_class_weights,
+    make_sample_weights,
+    count_class_samples,
+)
 
 # os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2" # Suppress TensorFlow INFO messages
 
@@ -40,9 +49,52 @@ try:
     import torch
     import torch.nn as nn
     import torch.optim as optim
-    from torch.utils.data import Dataset, DataLoader
+    from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler, Subset
 except ImportError:
     torch = None
+
+
+def _save_checkpoint_with_metadata(model, save_dir, base_name, library, model_data,
+                                   class_names, class_counts, stats, architecture="SimpleCNN"):
+    """
+    Save weights + sidecar JSON with metadata.
+    Returns (timestamped_path, metadata_dict).
+    Also overwrites <save_dir>/<base_name>_latest.pth for quick reload.
+    """
+    from datetime import datetime
+    os.makedirs(save_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    val_acc_str = f"{int(round(stats.get('final_val_accuracy', 0.0) * 100)):03d}"
+    fname = f"{base_name}_{library}_{timestamp}_acc{val_acc_str}.pth"
+    pth_path = os.path.join(save_dir, fname)
+    torch.save(model.state_dict(), pth_path)
+
+    meta = {
+        "timestamp": timestamp,
+        "library": library,
+        "architecture": architecture,
+        "model_name": getattr(model_data, "model_name", None),
+        "image_height": int(getattr(model_data, "image_height", 0)),
+        "image_width": int(getattr(model_data, "image_width", 0)),
+        "train_epochs_config": int(getattr(model_data, "train_epochs", 0)),
+        "class_names": list(class_names),
+        "class_counts": {str(k): int(v) for k, v in class_counts.items()},
+        "stats": {k: float(v) for k, v in stats.items()},
+        "weights_file": fname,
+    }
+    json_path = pth_path + ".json"
+    with open(json_path, "w") as f:
+        json.dump(meta, f, indent=2)
+
+    latest = os.path.join(save_dir, f"{base_name}_{library}_latest.pth")
+    try:
+        if os.path.exists(latest) or os.path.islink(latest):
+            os.remove(latest)
+        torch.save(model.state_dict(), latest)
+    except Exception:
+        pass
+
+    return pth_path, meta
 
 def _calculate_iou(boxA, boxB):
     # From annotation [x, y, w, h] to [x1, y1, x2, y2]
@@ -91,8 +143,13 @@ def cnn_data_generator(image_paths, model_data, detector_model):
         if not os.path.exists(json_path):
             continue
 
-        with open(json_path, 'r') as f:
-            annotations = json.load(f)
+        try:
+            with open(json_path, 'r') as f:
+                annotations = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            continue
+        if not annotations:
+            continue
 
         source_image = cv2.imread(img_path)
         if source_image is None:
@@ -367,60 +424,160 @@ def train_easyocr_custom(model_data, progress_callback, log_callback):
     
     return final_stats, class_names
 
-def train_model_pytorch(model_data, progress_callback, log_callback):
+def train_model_pytorch(model_data, progress_callback, log_callback, architecture="SimpleCNN"):
     """
-    Trains a PyTorch CNN model based on the provided configuration.
+    Trains a PyTorch CNN model using prepared recognition data
+    (folder-per-class under model_data.model_train_dataset).
+
+    `architecture` selects which model class to instantiate:
+      - "SimpleCNN"       — fast, no regularization (default, legacy behavior).
+      - "EasyOCRCharNet"  — same depth + BatchNorm + Dropout, better with
+                            small datasets.
+
+    Other behaviors (split, augmentation, class weights, sampler, scheduler,
+    early stopping, versioned checkpoint) are unchanged.
     """
     if not torch:
         log_callback("PyTorch is not installed.")
         return None, None
 
-    if not YOLO:
-        log_callback("Error: 'ultralytics' package not found for data generation.")
-        return None, None
-
-    epochs = int(model_data.train_epochs)
-    annotation_dir = model_data.annotation_dataset_path
-    
     log_callback(f"--- Starting PyTorch Training: {model_data.model_name} ---")
+    log_callback(f"Architecture: {architecture}")
 
-    # enforce full alphanumeric class set
-    default_chars = [str(i) for i in range(10)] + [chr(c) for c in range(ord('A'), ord('Z')+1)]
+    # Enforce full alphanumeric class set
+    default_chars = [str(i) for i in range(10)] + [chr(c) for c in range(ord('A'), ord('Z') + 1)]
     if not model_data.model_classes or set(model_data.model_classes) != set(default_chars):
         log_callback("Updating model_classes to full alphanumeric set (0-9, A-Z)")
         model_data.model_classes = default_chars
 
-    # 1. Prepare Data
-    detector_model = YOLO(model_data.detector_model_path)
-    image_files = [os.path.join(annotation_dir, f) for f in os.listdir(annotation_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-    random.shuffle(image_files)
-
-    # use all images for training (no separate validation set currently)
-    train_data = list(cnn_data_generator(image_files, model_data, detector_model))
-
-    if not train_data:
-        log_callback("No training data generated. Check annotations and detector.")
-        return None, None
-
     class_names = sorted(model_data.model_classes)
     num_classes = len(class_names)
-    
-    train_loader = DataLoader(CharDataset(train_data), batch_size=32, shuffle=True)
-    
-    # 2. Setup Model
+    img_h = int(model_data.image_height)
+    img_w = int(model_data.image_width)
+
+    train_dir = getattr(model_data, "model_train_dataset", "") or ""
+
+    use_recog_folder = (
+        train_dir
+        and os.path.isdir(train_dir)
+        and sum(count_class_samples(train_dir).values()) > 0
+    )
+
+    if use_recog_folder:
+        log_callback(f"Loading recognition dataset from: {train_dir}")
+        base_counts = count_class_samples(train_dir)
+        nonzero = [c for c in class_names if base_counts.get(c, 0) > 0]
+        empty = [c for c in class_names if base_counts.get(c, 0) == 0]
+        log_callback(f"Classes with samples: {len(nonzero)}/{num_classes}; empty: {empty}")
+
+        full = RecognitionDataset(train_dir, img_w, img_h, class_names=class_names, augment=False)
+        if len(full) == 0:
+            log_callback("Recognition folder is empty after filtering. Aborting.")
+            return None, None
+
+        # Deterministic 80/20 split
+        torch.manual_seed(42)
+        n_total = len(full)
+        n_train = int(round(n_total * 0.8))
+        n_val = n_total - n_train
+        if n_val == 0 and n_total > 1:
+            n_val = 1
+            n_train = n_total - 1
+        train_subset, val_subset = torch.utils.data.random_split(
+            full, [n_train, n_val], generator=torch.Generator().manual_seed(42)
+        )
+
+        # Augmented copy for the train subset
+        train_aug = RecognitionDataset(
+            train_dir, img_w, img_h, class_names=class_names, augment=True, seed=42
+        )
+        train_subset = Subset(train_aug, train_subset.indices)
+
+        # Per-sample weights for WeightedRandomSampler based on train counts
+        train_targets = [full.samples[i][1] for i in train_subset.indices]
+        train_class_counts = {i: 0 for i in range(num_classes)}
+        for t in train_targets:
+            train_class_counts[t] += 1
+        sample_weights = make_sample_weights(train_targets, train_class_counts, num_classes)
+        sampler = WeightedRandomSampler(
+            weights=torch.from_numpy(sample_weights).double(),
+            num_samples=len(train_targets),
+            replacement=True,
+        )
+
+        train_loader = DataLoader(train_subset, batch_size=32, sampler=sampler)
+        val_loader = DataLoader(val_subset, batch_size=32, shuffle=False)
+        class_counts_overall = full.class_counts
+        log_callback(
+            f"Train samples: {len(train_subset)}, Val samples: {len(val_subset)}"
+        )
+
+    else:
+        if not YOLO:
+            log_callback("Error: 'ultralytics' package not found for legacy data generation.")
+            return None, None
+        log_callback(
+            "Recognition folder empty; falling back to on-the-fly detector+annotation pipeline."
+        )
+        annotation_dir = model_data.annotation_dataset_path
+        detector_model = YOLO(model_data.detector_model_path)
+        image_files = [
+            os.path.join(annotation_dir, f)
+            for f in os.listdir(annotation_dir)
+            if f.lower().endswith(('.png', '.jpg', '.jpeg'))
+        ]
+        random.seed(42)
+        random.shuffle(image_files)
+        all_data = list(cnn_data_generator(image_files, model_data, detector_model))
+        if not all_data:
+            log_callback("No training data generated. Check annotations and detector.")
+            return None, None
+        random.Random(42).shuffle(all_data)
+        split = int(len(all_data) * 0.8)
+        train_data = all_data[:split] or all_data
+        val_data = all_data[split:] or all_data[-max(1, len(all_data) // 5):]
+
+        train_loader = DataLoader(CharDataset(train_data), batch_size=32, shuffle=True)
+        val_loader = DataLoader(CharDataset(val_data), batch_size=32, shuffle=False)
+        class_counts_overall = {i: 0 for i in range(num_classes)}
+        for _, y in all_data:
+            class_counts_overall[y] = class_counts_overall.get(y, 0) + 1
+
+    # Setup Model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = SimpleCNN(num_classes, int(model_data.image_height), int(model_data.image_width)).to(device)
-    criterion = nn.CrossEntropyLoss()
+    if architecture == "EasyOCRCharNet":
+        model = EasyOCRCharNet(num_classes, img_h, img_w).to(device)
+    else:
+        if architecture != "SimpleCNN":
+            log_callback(f"Unknown architecture {architecture!r}; falling back to SimpleCNN.")
+        model = SimpleCNN(num_classes, img_h, img_w).to(device)
+
+    class_weights = compute_class_weights(class_counts_overall, num_classes).to(device)
+    criterion = nn.CrossEntropyLoss(weight=class_weights)
     optimizer = optim.Adam(model.parameters(), lr=0.001)
-    
-    # 3. Training Loop
-    final_stats = {}
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.5, patience=4, min_lr=1e-6,
+    )
+
+    epochs = int(model_data.train_epochs)
+    patience = 15
+    best_val_loss = float("inf")
+    best_val_acc = 0.0
+    best_state = None
+    epochs_without_improvement = 0
+
+    final_stats = {
+        "final_accuracy": 0.0,
+        "final_loss": 0.0,
+        "final_val_accuracy": 0.0,
+        "final_val_loss": 0.0,
+    }
+
     for epoch in range(epochs):
         model.train()
         running_loss = 0.0
         correct = 0
         total = 0
-        
         for inputs, labels in train_loader:
             inputs, labels = inputs.to(device), labels.to(device)
             optimizer.zero_grad()
@@ -428,29 +585,88 @@ def train_model_pytorch(model_data, progress_callback, log_callback):
             loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
-            
             running_loss += loss.item()
             _, predicted = torch.max(outputs.data, 1)
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
-            
-        epoch_acc = correct / total
-        log_callback(f"Epoch {epoch+1}/{epochs} - Loss: {running_loss/len(train_loader):.4f} - Acc: {epoch_acc:.4f}")
+        epoch_loss = running_loss / max(1, len(train_loader))
+        epoch_acc = correct / total if total > 0 else 0.0
+
+        # Validation
+        model.eval()
+        val_running = 0.0
+        val_correct = 0
+        val_total = 0
+        with torch.no_grad():
+            for inputs, labels in val_loader:
+                inputs, labels = inputs.to(device), labels.to(device)
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
+                val_running += loss.item()
+                _, predicted = torch.max(outputs.data, 1)
+                val_total += labels.size(0)
+                val_correct += (predicted == labels).sum().item()
+        val_loss = val_running / max(1, len(val_loader))
+        val_acc = val_correct / val_total if val_total > 0 else 0.0
+
+        current_lr = optimizer.param_groups[0]["lr"]
+        log_callback(
+            f"Epoch {epoch + 1}/{epochs} - "
+            f"loss: {epoch_loss:.4f} acc: {epoch_acc:.4f} - "
+            f"val_loss: {val_loss:.4f} val_acc: {val_acc:.4f} - lr: {current_lr:.2e}"
+        )
         progress_callback.emit(int(((epoch + 1) / epochs) * 100))
 
-    # 4. Save Model
-    # Use .pth extension for PyTorch models
+        scheduler.step(val_loss)
+
+        improved = val_loss < best_val_loss - 1e-4
+        if improved:
+            best_val_loss = val_loss
+            best_val_acc = val_acc
+            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            epochs_without_improvement = 0
+            final_stats = {
+                "final_accuracy": epoch_acc,
+                "final_loss": epoch_loss,
+                "final_val_accuracy": val_acc,
+                "final_val_loss": val_loss,
+            }
+        else:
+            epochs_without_improvement += 1
+            if epochs_without_improvement >= patience:
+                log_callback(
+                    f"Early stopping triggered after {epoch + 1} epochs "
+                    f"(no val_loss improvement for {patience} epochs)."
+                )
+                progress_callback.emit(100)
+                break
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
+
+    # Save: legacy filename (so existing inference paths keep working) + versioned checkpoint
     base_name, _ = os.path.splitext(model_data.encoder_filename)
-    save_path = base_name + ".pth"
-    torch.save(model.state_dict(), save_path)
-    final_stats = {
-        "final_accuracy": epoch_acc,
-        "final_loss": running_loss / len(train_loader) if len(train_loader) > 0 else 0.0,
-        "final_val_accuracy": 0.0,
-        "final_val_loss": 0.0
-    }
-    log_callback(f"\n--- Training Finished. Model saved to: {save_path} ---")
-    
+    legacy_path = base_name + ".pth"
+    os.makedirs(os.path.dirname(legacy_path) or ".", exist_ok=True)
+    torch.save(model.state_dict(), legacy_path)
+
+    save_dir = os.path.join(os.path.dirname(legacy_path) or ".", "checkpoints")
+    timestamped_path, meta = _save_checkpoint_with_metadata(
+        model,
+        save_dir=save_dir,
+        base_name=os.path.basename(base_name),
+        library="pytorch",
+        model_data=model_data,
+        class_names=class_names,
+        class_counts=class_counts_overall,
+        stats=final_stats,
+        architecture=architecture,
+    )
+    log_callback(f"Best val_loss={best_val_loss:.4f} (val_acc={best_val_acc:.4f}).")
+    log_callback(f"Saved legacy weights to: {legacy_path}")
+    log_callback(f"Saved versioned checkpoint to: {timestamped_path}")
+    log_callback(f"Sidecar metadata: {timestamped_path}.json")
+
     return final_stats, class_names
 
 class TrainingWorker(QObject):
@@ -461,23 +677,27 @@ class TrainingWorker(QObject):
     log = Signal(str)      # Emits log messages
     finished = Signal(object)  # Emits a tuple (stats, class_names) when done
 
-    def __init__(self, model_data, library="PyTorch"):
+    def __init__(self, model_data, library="PyTorch", architecture="SimpleCNN"):
         super().__init__()
         self.model_data = model_data
         self.library = library
-        print(f"DEBUG: TrainingWorker initialized with library='{self.library}'")
+        self.architecture = architecture
+        print(
+            f"DEBUG: TrainingWorker initialized with library='{self.library}' "
+            f"architecture='{self.architecture}'"
+        )
 
     @Slot()
     def run(self):
-        """Starts the training process.  Only PyTorch is currently supported.
-        Older TensorFlow/EasyOCR paths are kept in the file for reference but
-        they are not invoked from the UI.
-        """
+        """Starts the training process. Only PyTorch is currently supported."""
         try:
             if self.library != "PyTorch":
-                # ignore any other library selections
-                self.log.emit(f"Library '{self.library}' requested but only PyTorch is supported. Using PyTorch.")
-            stats, class_names = train_model_pytorch(self.model_data, self.progress, self.log.emit)
+                self.log.emit(
+                    f"Library '{self.library}' requested but only PyTorch is supported. Using PyTorch."
+                )
+            stats, class_names = train_model_pytorch(
+                self.model_data, self.progress, self.log.emit, architecture=self.architecture,
+            )
             self.finished.emit((stats, class_names))
         except Exception as e:
             self.log.emit(f"\n--- An error occurred ---\n{e}")
@@ -491,12 +711,15 @@ class TrainingProcessDialog(QDialog):
     trainingCompleted = Signal(object) # Signal to emit a tuple (stats, class_names) to parent
     validationTestCompleted = Signal(list) # Signal to emit validation results to parent
 
-    def __init__(self, model_data, library="PyTorch", parent=None):
+    def __init__(self, model_data, library="PyTorch", architecture="SimpleCNN", parent=None):
         super().__init__(parent)
         self.model_data = model_data
         self.library = library
-        # NOTE: library parameter will always be 'PyTorch'
-        print(f"DEBUG: TrainingProcessDialog initialized with library='{self.library}' (fixed to PyTorch)")
+        self.architecture = architecture
+        print(
+            f"DEBUG: TrainingProcessDialog library='{self.library}' "
+            f"architecture='{self.architecture}'"
+        )
         self.train_files = [] # To store file lists for validation
         self.val_files = []
         self.setWindowTitle("Training Model")
@@ -531,7 +754,7 @@ class TrainingProcessDialog(QDialog):
     def setup_training_thread(self):
         """Sets up and starts the training worker thread."""
         self.thread = QThread()
-        self.worker = TrainingWorker(self.model_data, self.library)
+        self.worker = TrainingWorker(self.model_data, self.library, self.architecture)
         self.worker.moveToThread(self.thread)
 
         # --- Connections ---

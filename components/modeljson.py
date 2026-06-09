@@ -20,6 +20,7 @@ class ModelAi():
     train_epochs: int
     image_height: int
     image_width: int
+    architecture: str = "SimpleCNN"
     
     def get_model_save_path(self) -> str:
         """Returns the full path where the Keras model should be saved."""
@@ -34,8 +35,9 @@ class ModelAi():
 
 class ModelJson():
     model = None
-    def create_model(self, model_name: str, model_filename: str, encoder_filename: str, model_train_dataset: str, 
-                     model_test_dataset: str, yolo_dataset_path: str, annotation_dataset_path: str, detector_model_path: str, model_classes: List[str], train_epochs: int, image_height: int, image_width: int):
+    def create_model(self, model_name: str, model_filename: str, encoder_filename: str, model_train_dataset: str,
+                     model_test_dataset: str, yolo_dataset_path: str, annotation_dataset_path: str, detector_model_path: str, model_classes: List[str], train_epochs: int, image_height: int, image_width: int,
+                     architecture: str = "SimpleCNN"):
         # If the caller did not provide classes or provided a partial list,
         # default to the full set of alphanumeric characters (0-9, A-Z).
         if not model_classes:
@@ -50,7 +52,8 @@ class ModelJson():
                 model_classes = merged
 
         self.model = ModelAi(model_name=model_name, model_filename=model_filename, encoder_filename=encoder_filename, model_train_dataset=model_train_dataset,
-                             model_test_dataset=model_test_dataset, yolo_dataset_path=yolo_dataset_path, annotation_dataset_path=annotation_dataset_path, detector_model_path=detector_model_path, model_classes=model_classes, train_epochs=train_epochs, image_height=image_height, image_width=image_width )
+                             model_test_dataset=model_test_dataset, yolo_dataset_path=yolo_dataset_path, annotation_dataset_path=annotation_dataset_path, detector_model_path=detector_model_path, model_classes=model_classes, train_epochs=train_epochs, image_height=image_height, image_width=image_width,
+                             architecture=architecture)
         
 
     def serialize(self):
@@ -103,20 +106,21 @@ class ModelJson():
             with open(filename, 'r') as json_file:
                 loaded_data = json.load(json_file)
 
-            self.create_model( 
+            self.create_model(
                 loaded_data['model_name'],
-                loaded_data['model_filename'], 
-                loaded_data['encoder_filename'], 
-                loaded_data['model_train_dataset'], 
-                loaded_data['model_test_dataset'], 
-                loaded_data.get('yolo_dataset_path', ''), # Use .get for backward compatibility
-                loaded_data.get('annotation_dataset_path', ''), # Use .get for backward compatibility
-                loaded_data.get('detector_model_path', ''), # For detector model
-                loaded_data['model_classes'], 
-                loaded_data['train_epochs'], 
-                loaded_data['image_height'], 
-                loaded_data['image_width']
-                )
+                loaded_data['model_filename'],
+                loaded_data['encoder_filename'],
+                loaded_data['model_train_dataset'],
+                loaded_data['model_test_dataset'],
+                loaded_data.get('yolo_dataset_path', ''),
+                loaded_data.get('annotation_dataset_path', ''),
+                loaded_data.get('detector_model_path', ''),
+                loaded_data['model_classes'],
+                loaded_data['train_epochs'],
+                loaded_data['image_height'],
+                loaded_data['image_width'],
+                architecture=loaded_data.get('architecture', 'SimpleCNN'),
+            )
             return True
 
         except FileNotFoundError:

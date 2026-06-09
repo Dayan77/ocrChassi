@@ -1,4 +1,5 @@
 import os
+import gc
 import time
 import cv2
 import numpy as np
@@ -12,7 +13,7 @@ from PySide6.QtGui import QPixmap, QImage
 
 import pv_visionlib
 import config_ini
-from components.models import SimpleCNN
+from components.models import SimpleCNN, EasyOCRCharNet, expand_bbox, preprocess_char_crop, filter_detections as _filter_detections_fn
 
 try:
     from ultralytics import YOLO # For our custom detector
@@ -111,10 +112,19 @@ class InferenceView(QWidget):
         main_layout.setSpacing(10)
 
         # --- Controls Group ---
+        # Two rows: row 1 = source/library/buttons/flags;
+        #           row 2 = sliders (confidence + bbox padding).
+        # Single horizontal row used to overflow off-screen on smaller windows.
         controls_group = QGroupBox("Controles de Inferência")
         controls_group.setContentsMargins(10, 20, 10, 10)
-        controls_layout = QHBoxLayout(controls_group)
+        controls_layout = QVBoxLayout(controls_group)
         controls_layout.setContentsMargins(10, 20, 10, 10)
+        controls_row1 = QHBoxLayout()
+        controls_row2 = QHBoxLayout()
+        controls_row3 = QHBoxLayout()
+        controls_layout.addLayout(controls_row1)
+        controls_layout.addLayout(controls_row2)
+        controls_layout.addLayout(controls_row3)
 
         self.camera_select = QComboBox()
         self.camera_select.addItems(["Camera A", "Camera B"])
@@ -138,20 +148,89 @@ class InferenceView(QWidget):
         self.confidence_label = QLabel("Confiança: 0%")
         self.confidence_slider.valueChanged.connect(lambda v: self.confidence_label.setText(f"Confiança: {v}%"))
 
+        # Bbox padding (%) — expands each detector box outward before cropping
+        # to give characters some breathing room. Default 10% matches the
+        # constant used by datasetview.prepare_recognition_dataset so train
+        # and inference see consistent crops.
+        self.bbox_pad_slider = QSlider(Qt.Orientation.Horizontal)
+        self.bbox_pad_slider.setRange(0, 50)
+        self.bbox_pad_slider.setValue(10)
+        self.bbox_pad_label = QLabel("Padding bbox: 10%")
+        self.bbox_pad_slider.valueChanged.connect(
+            lambda v: self.bbox_pad_label.setText(f"Padding bbox: {v}%")
+        )
+
+        # Detection filter knobs
+        self.iou_slider = QSlider(Qt.Orientation.Horizontal)
+        self.iou_slider.setRange(10, 90)
+        self.iou_slider.setValue(40)
+        self.iou_label = QLabel("IoU máx (NMS): 40%")
+        self.iou_slider.valueChanged.connect(
+            lambda v: self.iou_label.setText(f"IoU máx (NMS): {v}%")
+        )
+
+        # Max horizontal gap between consecutive chars, as a multiple of the
+        # median gap. Higher = more lenient (keeps far-away boxes); lower =
+        # stricter (drops outliers more aggressively).
+        self.gap_slider = QSlider(Qt.Orientation.Horizontal)
+        self.gap_slider.setRange(10, 50)  # divided by 10 -> 1.0x .. 5.0x
+        self.gap_slider.setValue(25)
+        self.gap_label = QLabel("Gap horiz. máx: 2.5×")
+        self.gap_slider.valueChanged.connect(
+            lambda v: self.gap_label.setText(f"Gap horiz. máx: {v/10:.1f}×")
+        )
+
+        # Vertical deviation factor: how far a box's y-center may be from
+        # the median y-center, as a fraction of the median height.
+        self.vdev_slider = QSlider(Qt.Orientation.Horizontal)
+        self.vdev_slider.setRange(10, 150)  # divided by 100 -> 0.1 .. 1.5
+        self.vdev_slider.setValue(60)
+        self.vdev_label = QLabel("Desvio vert. máx: 0.60× h")
+        self.vdev_slider.valueChanged.connect(
+            lambda v: self.vdev_label.setText(f"Desvio vert. máx: {v/100:.2f}× h")
+        )
+
         self.use_crop_checkbox = QCheckBox("Recortar área (Detector)")
         self.flip_image_checkbox = QCheckBox("Inverter Horizontalmente")
+        # CLAHE matches the preprocessing applied by prepare_recognition_dataset
+        # so train and inference see the same contrast distribution. Default ON.
+        self.clahe_checkbox = QCheckBox("CLAHE (contraste)")
+        self.clahe_checkbox.setChecked(True)
+        self.clahe_checkbox.setToolTip(
+            "Equaliza o contraste local do crop antes da CNN, igual ao que o "
+            "preparo de dados de treino faz. Desligue só para comparar."
+        )
 
-        controls_layout.addWidget(QLabel("Fonte da Imagem:"))
-        controls_layout.addWidget(self.camera_select)
-        controls_layout.addWidget(QLabel("Biblioteca:"))
-        controls_layout.addWidget(self.library_select)
-        controls_layout.addWidget(self.run_inference_btn)
-        controls_layout.addWidget(self.save_btn)
-        controls_layout.addWidget(self.use_crop_checkbox)
-        controls_layout.addWidget(self.flip_image_checkbox)
-        controls_layout.addWidget(self.confidence_label)
-        controls_layout.addWidget(self.confidence_slider)
-        controls_layout.addStretch()
+        # Row 1: source / library / actions / flags
+        controls_row1.addWidget(QLabel("Fonte da Imagem:"))
+        controls_row1.addWidget(self.camera_select)
+        controls_row1.addWidget(QLabel("Biblioteca:"))
+        controls_row1.addWidget(self.library_select)
+        controls_row1.addWidget(self.run_inference_btn)
+        controls_row1.addWidget(self.save_btn)
+        controls_row1.addWidget(self.use_crop_checkbox)
+        controls_row1.addWidget(self.flip_image_checkbox)
+        controls_row1.addWidget(self.clahe_checkbox)
+        controls_row1.addStretch()
+
+        # Row 2: per-character knobs
+        controls_row2.addWidget(self.confidence_label)
+        controls_row2.addWidget(self.confidence_slider)
+        controls_row2.addSpacing(20)
+        controls_row2.addWidget(self.bbox_pad_label)
+        controls_row2.addWidget(self.bbox_pad_slider)
+        controls_row2.addStretch()
+
+        # Row 3: chain-level detection filter knobs
+        controls_row3.addWidget(self.iou_label)
+        controls_row3.addWidget(self.iou_slider)
+        controls_row3.addSpacing(15)
+        controls_row3.addWidget(self.gap_label)
+        controls_row3.addWidget(self.gap_slider)
+        controls_row3.addSpacing(15)
+        controls_row3.addWidget(self.vdev_label)
+        controls_row3.addWidget(self.vdev_slider)
+        controls_row3.addStretch()
 
         # --- Middle section for results and characters ---
         middle_layout = QHBoxLayout()
@@ -252,9 +331,11 @@ class InferenceView(QWidget):
                 raise ImportError("ultralytics.YOLO is not available (package missing or import failed)")
             # create detector and move it to the same device we plan to use
             self.detector_model = YOLO(detector_model_path)
-            # determine device for detection, fall back to cpu if CUDA is unavailable
+            # determine device for detection: cuda > mps (Apple Silicon) > cpu
             if torch and torch.cuda.is_available():
                 self.device = torch.device("cuda")
+            elif torch and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                self.device = torch.device("mps")
             else:
                 self.device = torch.device("cpu")
             try:
@@ -265,8 +346,17 @@ class InferenceView(QWidget):
             
             if library == 'pytorch':
                 if torch and SimpleCNN:
-                    # reuse the previously determined device (cpu or cuda)
-                    self.inference_model = SimpleCNN(len(model_data.model_classes), int(model_data.image_height), int(model_data.image_width)).to(self.device)
+                    # Pick the architecture the trainer saved with this model.
+                    arch = getattr(model_data, "architecture", "SimpleCNN") or "SimpleCNN"
+                    if arch == "EasyOCRCharNet" and EasyOCRCharNet is not None:
+                        model_cls = EasyOCRCharNet
+                    else:
+                        model_cls = SimpleCNN
+                    self.inference_model = model_cls(
+                        len(model_data.model_classes),
+                        int(model_data.image_height),
+                        int(model_data.image_width),
+                    ).to(self.device)
                     try:
                         from components.models import load_pytorch_model_with_class_mismatch_handling
                         success, message, requires_retraining = load_pytorch_model_with_class_mismatch_handling(
@@ -338,6 +428,19 @@ class InferenceView(QWidget):
             self.library_select.setCurrentIndex(index)
             self.run_inference()
 
+    def _release_inference_memory(self):
+        """Drop tensor caches between inferences to keep RAM/MPS usage stable."""
+        gc.collect()
+        if torch is None or self.device is None:
+            return
+        if self.device.type == "cuda":
+            torch.cuda.empty_cache()
+        elif self.device.type == "mps":
+            try:
+                torch.mps.empty_cache()
+            except AttributeError:
+                pass
+
     @Slot()
     def run_inference(self):
         library = self.library_select.currentText()
@@ -359,92 +462,20 @@ class InferenceView(QWidget):
             
         return camera.actual_image.copy() if camera.actual_image is not None else None
 
-    def filter_detections(self, boxes, confs):
-        """
-        Filters detected boxes based on heuristics:
-        1. Overlap/Intersection (NMS-like)
-        2. Size consistency (outliers removal)
-        3. Vertical alignment (single line assumption)
-        """
-        if len(boxes) == 0:
-            return []
-
-        candidates = []
-        for i, box in enumerate(boxes):
-            x1, y1, x2, y2 = box
-            candidates.append({
-                'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2,
-                'w': x2 - x1, 'h': y2 - y1,
-                'cx': (x1 + x2) / 2, 'cy': (y1 + y2) / 2,
-                'conf': confs[i]
-            })
-
-        # 1. Overlap Removal (Custom NMS)
-        # Sort by confidence descending to keep the best boxes
-        candidates.sort(key=lambda x: x['conf'], reverse=True)
-        keep = []
-
-        for c in candidates:
-            discard = False
-            for k in keep:
-                # Calculate Intersection
-                xA = max(c['x1'], k['x1'])
-                yA = max(c['y1'], k['y1'])
-                xB = min(c['x2'], k['x2'])
-                yB = min(c['y2'], k['y2'])
-                interArea = max(0, xB - xA) * max(0, yB - yA)
-                
-                if interArea > 0:
-                    boxAArea = c['w'] * c['h']
-                    boxBArea = k['w'] * k['h']
-                    
-                    # IoU
-                    iou = interArea / float(boxAArea + boxBArea - interArea)
-                    
-                    # Intersection over Minimum Area (check for containment)
-                    minArea = min(boxAArea, boxBArea)
-                    io_min = interArea / minArea if minArea > 0 else 0
-                    
-                    # Thresholds: 50% intersection as requested (using 0.4/0.5 to be safe)
-                    if iou > 0.4 or io_min > 0.5:
-                        discard = True
-                        break
-            
-            if not discard:
-                keep.append(c)
-        
-        candidates = keep
-        if not candidates:
-            return []
-
-        # 2. Size Consistency
-        # Use median height as reference
-        heights = [c['h'] for c in candidates]
-        median_h = np.median(heights)
-        
-        # Filter outliers: e.g., < 0.6*median or > 1.6*median
-        candidates = [c for c in candidates if 0.6 * median_h < c['h'] < 1.6 * median_h]
-        
-        if not candidates:
-            return []
-
-        # 3. Vertical Alignment
-        # Use median Y-center as reference line
-        cys = [c['cy'] for c in candidates]
-        median_cy = np.median(cys)
-        
-        # Filter boxes that are too far vertically from the line
-        # Threshold: deviation > 0.6 * median_height
-        candidates = [c for c in candidates if abs(c['cy'] - median_cy) < (median_h * 0.6)]
-
-        # Return boxes sorted left-to-right
-        candidates.sort(key=lambda x: x['x1'])
-        
-        result_boxes = []
-        for c in candidates:
-            result_boxes.append([c['x1'], c['y1'], c['x2'], c['y2']])
-            
-        return np.array(result_boxes)
+    def filter_detections(self, boxes, confs,
+                          iou_thresh=0.4, iomin_thresh=0.5,
+                          height_low=0.6, height_high=1.6,
+                          vertical_dev_factor=0.6,
+                          max_gap_factor=2.5):
+        """Thin wrapper around components.models.filter_detections so the
+        production InferenceWorker reuses the exact same logic."""
+        return _filter_detections_fn(
+            boxes, confs,
+            iou_thresh=iou_thresh, iomin_thresh=iomin_thresh,
+            height_low=height_low, height_high=height_high,
+            vertical_dev_factor=vertical_dev_factor,
+            max_gap_factor=max_gap_factor,
+        )
 
     def run_custom_inference(self, library):
         """
@@ -520,7 +551,12 @@ class InferenceView(QWidget):
         det_results = detection_results[0].boxes
         raw_boxes = det_results.xyxy.cpu().numpy()
         raw_confs = det_results.conf.cpu().numpy()
-        boxes = self.filter_detections(raw_boxes, raw_confs)
+        boxes = self.filter_detections(
+            raw_boxes, raw_confs,
+            iou_thresh=self.iou_slider.value() / 100.0,
+            max_gap_factor=self.gap_slider.value() / 10.0,
+            vertical_dev_factor=self.vdev_slider.value() / 100.0,
+        )
         
         if len(boxes) == 0:
             self.predicted_text_label.setText("<b>Nenhum caractere detectado.</b>")
@@ -568,22 +604,29 @@ class InferenceView(QWidget):
         img_h, img_w = model_data.image_height, model_data.image_width
         rois_dict = {}
 
+        gray_img = cv2.cvtColor(source_image, cv2.COLOR_BGR2GRAY)
+        ih, iw = gray_img.shape[:2]
+        pad_pct = int(self.bbox_pad_slider.value())
+
         for i, box in enumerate(character_boxes):
             x_min, y_min, x_max, y_max = map(int, box)
-            
-            # --- Preprocessing to match training data ---
-            gray_img = cv2.cvtColor(source_image, cv2.COLOR_BGR2GRAY)
-            char_img = gray_img[y_min:y_max, x_min:x_max]
-            
-            h, w = char_img.shape
-            if h > w:
-                pad = (h - w) // 2
-                char_img = cv2.copyMakeBorder(char_img, 0, 0, pad, pad, cv2.BORDER_CONSTANT, value=[0])
-            elif w > h:
-                pad = (w - h) // 2
-                char_img = cv2.copyMakeBorder(char_img, pad, pad, 0, 0, cv2.BORDER_CONSTANT, value=[0])
 
-            resized_char = cv2.resize(char_img, (img_w, img_h), interpolation=cv2.INTER_AREA)
+            # --- Preprocessing to match training data ---
+            # Expand the detector box outward by `pad_pct`% to recover
+            # characters cropped too tightly. The same default is used by
+            # prepare_recognition_dataset so train/inference stay aligned.
+            x_min, y_min, x_max, y_max = expand_bbox(
+                x_min, y_min, x_max, y_max, ih, iw, pad_pct,
+            )
+            char_img = gray_img[y_min:y_max, x_min:x_max]
+            # Mirror exactly what prepare_recognition_dataset does:
+            # pad-to-square -> resize -> CLAHE (when enabled).
+            resized_char = preprocess_char_crop(
+                char_img, img_h, img_w,
+                apply_clahe=self.clahe_checkbox.isChecked(),
+            )
+            if resized_char is None:
+                continue
             normalized_char = resized_char / 255.0
             
             predicted_char = "?"
@@ -658,6 +701,8 @@ class InferenceView(QWidget):
         # record elapsed time
         elapsed = time.time() - start_time
         self.time_label.setText(f"<b>Tempo: {elapsed*1000:.1f} ms</b>")
+
+        self._release_inference_memory()
 
         # the following section was erroneously duplicated from the old
         # run_inference_easyocr method; remove it entirely since we no longer
@@ -853,6 +898,8 @@ class InferenceView(QWidget):
         program_view.cameras[cam_index].draw_rois(img_with_boxes, [])
         program_view.cameras[cam_index].draw_rois_dict(rois_dict)
         program_view.cameras[cam_index].image_chars = predicted_string.strip()
+
+        self._release_inference_memory()
 
     def show_context_menu(self, pos):
         item = self.char_list_widget.itemAt(pos)

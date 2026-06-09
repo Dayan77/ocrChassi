@@ -22,11 +22,15 @@ class TrainingSummaryView(QWidget):
     and dataset, with a button to start the training process.
     """
 
-    startTrainingClicked = Signal(str)
+    startTrainingClicked = Signal(str, str)  # (library, architecture)
     startDetectorTrainingClicked = Signal()
     prepareYoloDataClicked = Signal()
     prepareRecognitionDataClicked = Signal()
     prepareEasyOcrDataClicked = Signal()
+    reviewRecognitionDataClicked = Signal()
+    reviewYoloDataClicked = Signal()
+    activeLearningClicked = Signal()
+    dataAugmentationClicked = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -45,11 +49,24 @@ class TrainingSummaryView(QWidget):
         self.encoder_path_edit.setFixedWidth(400)
         self.encoder_path_edit.setReadOnly(True)
 
-        # we no longer allow selecting a training library in the UI;
-        # training will always use PyTorch.
+        self.architecture_select = QComboBox()
+        # Display label -> internal key passed to the trainer
+        self.architecture_select.addItem(
+            "SimpleCNN — rápida, sem regularização (~2,1M params)", "SimpleCNN"
+        )
+        self.architecture_select.addItem(
+            "CNN robusta — BatchNorm + Dropout 0.5 (~4M params)", "EasyOCRCharNet"
+        )
+        self.architecture_select.setToolTip(
+            "SimpleCNN: 3 blocos conv simples (mais rápida, mais sensível a overfit).\n"
+            "CNN robusta: mesma profundidade com BatchNorm em cada conv e Dropout no "
+            "classificador — costuma generalizar melhor com poucas amostras."
+        )
+
         config_layout.addRow("Nome do Modelo:", self.model_name_label)
         config_layout.addRow("Épocas de Treinamento:", self.epochs_label)
         config_layout.addRow("Dimensões da Imagem:", self.image_size_label)
+        config_layout.addRow("Arquitetura PyTorch:", self.architecture_select)
         config_layout.addRow("Arquivo do Codificador:", self.encoder_path_edit)
 
         # --- Dataset Summary Group ---
@@ -120,12 +137,63 @@ class TrainingSummaryView(QWidget):
         self.prepare_easyocr_button.clicked.connect(self.prepareEasyOcrDataClicked)
         self.prepare_easyocr_button.setEnabled(False)
 
+        self.review_rec_button = QPushButton("Revisar Dados Reconhecimento")
+        review_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView)
+        self.review_rec_button.setIcon(review_icon)
+        self.review_rec_button.setMinimumHeight(40)
+        self.review_rec_button.setFont(font)
+        self.review_rec_button.setToolTip(
+            "Abre os crops gerados pela 'Prepare Recognition Data' para validar/mover/deletar."
+        )
+        self.review_rec_button.clicked.connect(self.reviewRecognitionDataClicked)
+        self.review_rec_button.setEnabled(False)
+
+        self.review_yolo_button = QPushButton("Revisar Dados YOLO")
+        self.review_yolo_button.setIcon(review_icon)
+        self.review_yolo_button.setMinimumHeight(40)
+        self.review_yolo_button.setFont(font)
+        self.review_yolo_button.setToolTip(
+            "Abre as imagens preparadas para o YOLO em train/val para validar/mover/deletar."
+        )
+        self.review_yolo_button.clicked.connect(self.reviewYoloDataClicked)
+        self.review_yolo_button.setEnabled(False)
+
+        self.active_learning_button = QPushButton("Active Learning")
+        al_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DialogHelpButton)
+        self.active_learning_button.setIcon(al_icon)
+        self.active_learning_button.setMinimumHeight(40)
+        self.active_learning_button.setFont(font)
+        self.active_learning_button.setToolTip(
+            "Roda o modelo nas imagens anotadas e lista os casos onde a predição "
+            "diverge da anotação ou tem baixa confiança — para você ampliar o "
+            "treino exatamente onde está errando."
+        )
+        self.active_learning_button.clicked.connect(self.activeLearningClicked)
+        self.active_learning_button.setEnabled(False)
+
+        self.data_aug_button = QPushButton("Data Augmentation")
+        aug_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView)
+        self.data_aug_button.setIcon(aug_icon)
+        self.data_aug_button.setMinimumHeight(40)
+        self.data_aug_button.setFont(font)
+        self.data_aug_button.setToolTip(
+            "Gera variantes augmentadas (rotação/brilho/ruído) dos crops em "
+            "model_train_dataset/<classe>/ e salva no disco. Útil para "
+            "expandir manualmente o dataset antes do treino."
+        )
+        self.data_aug_button.clicked.connect(self.dataAugmentationClicked)
+        self.data_aug_button.setEnabled(False)
+
         actions_layout.addWidget(self.start_button)
         actions_layout.addSpacing(20)
         actions_layout.addWidget(self.train_detector_button)
         actions_layout.addWidget(self.prepare_rec_button)
+        actions_layout.addWidget(self.review_rec_button)
         actions_layout.addWidget(self.prepare_easyocr_button)
         actions_layout.addWidget(self.prepare_yolo_button)
+        actions_layout.addWidget(self.review_yolo_button)
+        actions_layout.addWidget(self.active_learning_button)
+        actions_layout.addWidget(self.data_aug_button)
 
         horiz_groups = QHBoxLayout()
         horiz_groups.addWidget(config_group)
@@ -150,11 +218,23 @@ class TrainingSummaryView(QWidget):
             self.test_path_edit.setText(model_data.model_test_dataset)
             # Join list of classes into a displayable string
             self.classes_list_label.setText(f"<b>{''.join(model_data.model_classes)}</b>")
+
+            # Reflect the persisted architecture if the model was trained
+            # before — falls back to SimpleCNN for legacy models without the
+            # field.
+            arch = getattr(model_data, "architecture", "SimpleCNN") or "SimpleCNN"
+            idx = self.architecture_select.findData(arch)
+            if idx >= 0:
+                self.architecture_select.setCurrentIndex(idx)
             self.start_button.setEnabled(True)
             self.prepare_rec_button.setEnabled(True)
             self.prepare_yolo_button.setEnabled(True)
             self.train_detector_button.setEnabled(True)
             self.prepare_easyocr_button.setEnabled(True)
+            self.review_rec_button.setEnabled(True)
+            self.review_yolo_button.setEnabled(True)
+            self.active_learning_button.setEnabled(True)
+            self.data_aug_button.setEnabled(True)
         else:
             self.model_name_label.setText("N/A")
             self.epochs_label.setText("N/A")
@@ -168,6 +248,10 @@ class TrainingSummaryView(QWidget):
             self.prepare_yolo_button.setEnabled(False)
             self.train_detector_button.setEnabled(False)
             self.prepare_easyocr_button.setEnabled(False)
+            self.review_rec_button.setEnabled(False)
+            self.review_yolo_button.setEnabled(False)
+            self.active_learning_button.setEnabled(False)
+            self.data_aug_button.setEnabled(False)
 
         if dataset_summary:
             num_classes = dataset_summary.get('classes', 'N/A')
@@ -179,10 +263,13 @@ class TrainingSummaryView(QWidget):
             self.total_images_label.setText("N/A")
 
     def on_start_clicked(self):
-        # always use PyTorch internally; hide other options from the UI
         selected_lib = "PyTorch"
-        print(f"DEBUG: TrainingSummaryView emitting startTrainingClicked with '{selected_lib}'")
-        self.startTrainingClicked.emit(selected_lib)
+        architecture = self.architecture_select.currentData() or "SimpleCNN"
+        print(
+            f"DEBUG: TrainingSummaryView emitting startTrainingClicked "
+            f"with library='{selected_lib}' architecture='{architecture}'"
+        )
+        self.startTrainingClicked.emit(selected_lib, architecture)
 
 
 if __name__ == '__main__':

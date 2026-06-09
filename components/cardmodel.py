@@ -24,6 +24,9 @@ from components.trainingprocess import TrainingProcessDialog
 from components.resultsview import ResultsView
 from components.inferenceview import InferenceView
 from components.detectortrainingdialog import DetectorTrainingDialog
+from components.datasetreviewdialog import RecognitionReviewDialog, YoloReviewDialog
+from components.activelearningdialog import ActiveLearningDialog
+from components.dataaugmentationdialog import DataAugmentationDialog
 
 
 class CardModel(QWidget):
@@ -155,6 +158,10 @@ class ModelView(QFrame):
         self.training_summary_view.prepareYoloDataClicked.connect(self.on_prepare_yolo_data_clicked)
         self.training_summary_view.prepareEasyOcrDataClicked.connect(self.on_prepare_easyocr_data_clicked)
         self.training_summary_view.startDetectorTrainingClicked.connect(self.start_detector_training)
+        self.training_summary_view.reviewRecognitionDataClicked.connect(self.on_review_recognition_data_clicked)
+        self.training_summary_view.reviewYoloDataClicked.connect(self.on_review_yolo_data_clicked)
+        self.training_summary_view.activeLearningClicked.connect(self.on_active_learning_clicked)
+        self.training_summary_view.dataAugmentationClicked.connect(self.on_data_augmentation_clicked)
 
         # --- Integrate ResultsView into the "Resultados" tab ---
         self.results_view = ResultsView()
@@ -224,17 +231,19 @@ class ModelView(QFrame):
         model_data = self.parent_wnd.model_json.model
         self.training_summary_view.update_summary(model_data, dataset_summary)
 
-    def start_training(self, library="PyTorch"):
-        """Slot to initiate the training process. Always use PyTorch internally."""
-        # ignore the incoming library argument and hardcode PyTorch
-        print(f"DEBUG: CardModel.start_training forcing PyTorch (received '{library}')")
+    def start_training(self, library="PyTorch", architecture="SimpleCNN"):
+        """Slot to initiate the training process. Always use PyTorch internally;
+        `architecture` selects which PyTorch model class to instantiate."""
+        print(
+            f"DEBUG: CardModel.start_training library='{library}' "
+            f"architecture='{architecture}'"
+        )
         model_data = self.parent_wnd.model_json.model
         if not model_data:
-            # You might want to show a QMessageBox here
             print("No model data loaded.")
             return
-        
-        dialog = TrainingProcessDialog(model_data, "PyTorch", self)
+
+        dialog = TrainingProcessDialog(model_data, "PyTorch", architecture, self)
         dialog.trainingCompleted.connect(self.on_training_completed)
         dialog.validationTestCompleted.connect(self.on_validation_completed)
         dialog.exec()
@@ -274,7 +283,103 @@ class ModelView(QFrame):
         destination_path = model_data.model_train_dataset
         detector_path = model_data.detector_model_path
 
-        self.dataset_view.prepare_recognition_dataset(source_path, destination_path, detector_path, model_data, parent_widget=self)
+        print(f"[PrepRec] source={source_path!r}")
+        print(f"[PrepRec] destination={destination_path!r}")
+        print(f"[PrepRec] detector={detector_path!r}")
+        result = self.dataset_view.prepare_recognition_dataset(source_path, destination_path, detector_path, model_data, parent_widget=self)
+        print(f"[PrepRec] prepare_recognition_dataset returned: {result!r}")
+        if result:
+            print(f"[PrepRec] calling load_dataset({destination_path!r})")
+            self.dataset_view.load_dataset(destination_path)
+            print(f"[PrepRec] load_dataset finished")
+
+    @Slot()
+    def on_review_recognition_data_clicked(self):
+        """Open a dialog that shows the prepared recognition crops grouped by
+        class. The user can move/delete/flip individual images and click
+        'Apply Changes' to persist."""
+        model_data = self.parent_wnd.model_json.model
+        if not model_data:
+            QMessageBox.warning(self, "No Model Data", "Please load a model configuration first.")
+            return
+        path = model_data.model_train_dataset
+        if not path or not os.path.isdir(path):
+            QMessageBox.warning(
+                self,
+                "Dados não preparados",
+                "A pasta de reconhecimento não existe ainda. "
+                "Rode 'Prepare Recognition Data' antes.",
+            )
+            return
+        dialog = RecognitionReviewDialog.build(self, path)
+        dialog.exec()
+        # After the user is done, reload the main DatasetView so counts stay
+        # accurate in the 'Anotações' tab.
+        self.dataset_view.load_dataset(path)
+        self.update_training_summary({'classes': len(self.dataset_view.class_widgets),
+                                      'images': sum(d['count'] for d in self.dataset_view.class_widgets.values())})
+
+    @Slot()
+    def on_review_yolo_data_clicked(self):
+        """Open a dialog that shows YOLO-prepared images (train/val) and lets
+        the user move/delete individual examples (label .txt is kept in sync)."""
+        model_data = self.parent_wnd.model_json.model
+        if not model_data:
+            QMessageBox.warning(self, "No Model Data", "Please load a model configuration first.")
+            return
+        path = model_data.yolo_dataset_path
+        images_dir = os.path.join(path, "images") if path else ""
+        if not images_dir or not os.path.isdir(images_dir):
+            QMessageBox.warning(
+                self,
+                "Dados não preparados",
+                "A pasta YOLO/images não existe ainda. "
+                "Rode 'Prepare Detector(YOLO) Data' antes.",
+            )
+            return
+        dialog = YoloReviewDialog.build(self, path)
+        dialog.exec()
+
+    @Slot()
+    def on_data_augmentation_clicked(self):
+        """Open the on-disk data augmentation dialog: lets the user multiply
+        existing crops to grow the train set before training."""
+        model_data = self.parent_wnd.model_json.model
+        if not model_data:
+            QMessageBox.warning(self, "No Model Data", "Please load a model configuration first.")
+            return
+        path = model_data.model_train_dataset
+        if not path or not os.path.isdir(path):
+            QMessageBox.warning(
+                self,
+                "Dados não preparados",
+                "A pasta de reconhecimento não existe ainda. "
+                "Rode 'Prepare Recognition Data' antes.",
+            )
+            return
+        dialog = DataAugmentationDialog(model_data, self)
+        dialog.exec()
+        # Reload main DatasetView so the new variants show up
+        self.dataset_view.load_dataset(path)
+
+    @Slot()
+    def on_active_learning_clicked(self):
+        """Open the active learning dialog: surface low-confidence and
+        disagreement cases so the user can grow underrepresented classes."""
+        model_data = self.parent_wnd.model_json.model
+        if not model_data:
+            QMessageBox.warning(self, "No Model Data", "Please load a model configuration first.")
+            return
+        ann_path = model_data.annotation_dataset_path
+        if not ann_path or not os.path.isdir(ann_path):
+            QMessageBox.warning(
+                self,
+                "Sem anotações",
+                "Aponte um 'Annotation Dataset' válido na aba 'Modelo' antes.",
+            )
+            return
+        dialog = ActiveLearningDialog(model_data, self)
+        dialog.exec()
 
     @Slot()
     def on_prepare_easyocr_data_clicked(self):
@@ -311,15 +416,16 @@ class ModelView(QFrame):
 
         # If training was successful and we have class names, update the model
         if stats and class_names:
-            # Store the classes as a list, not a concatenated string
             self.parent_wnd.model_json.model.model_classes = class_names
-            
-            # Save the updated model back to the JSON file
+            # Persist the architecture so the next inference rebuilds the
+            # right class before loading the .pth weights.
+            chosen_arch = self.training_summary_view.architecture_select.currentData() or "SimpleCNN"
+            self.parent_wnd.model_json.model.architecture = chosen_arch
+
             self.parent_wnd.model_json.save_to_file(self.parent_wnd.model_json.model.model_filename)
-            
-            # Update the UI in the "Modelo" tab to show the new class string
+
             self.json_model_view.update_json_values()
-            print(f"Updated model classes to: {class_names} and saved to file.")
+            print(f"Updated model classes to: {class_names}, architecture: {chosen_arch}, saved to file.")
 
     @Slot(list)
     def on_validation_completed(self, results):
@@ -523,25 +629,27 @@ class ModelJsonView(QWidget):
             return False
         
         try:
+            img_h = int(self.json_imageheight_edit.value())
+            img_w = int(self.json_imagewidth_edit.value())
             if not self.parent_wnd.model_json.model:
                 self.parent_wnd.model_json.create_model(
                     self.json_modelname_edit.text(),
                     self.json_filename_edit.text(),
-                    self.json_encoderfile_edit.text(), 
+                    self.json_encoderfile_edit.text(),
                     self.json_traindataset_edit.text(),
                     self.json_testdataset_edit.text(),
                     self.json_yolodataset_edit.text(),
                     self.json_annotationdataset_edit.text(),
                     self.json_detectormodel_edit.text(),
-                    list(self.json_classes_edit.text()), # Convert string back to list of chars
+                    list(self.json_classes_edit.text()),
                     self.json_epochs_edit.value(),
-                    128,
-                    128
+                    img_h,
+                    img_w,
                 )
             else:
                 self.parent_wnd.model_json.model.model_name = self.json_modelname_edit.text()
                 self.parent_wnd.model_json.model.model_filename = self.json_filename_edit.text()
-                self.parent_wnd.model_json.model.encoder_filename =  self.json_encoderfile_edit.text() 
+                self.parent_wnd.model_json.model.encoder_filename =  self.json_encoderfile_edit.text()
                 self.parent_wnd.model_json.model.model_train_dataset =  self.json_traindataset_edit.text()
                 self.parent_wnd.model_json.model.model_test_dataset =  self.json_testdataset_edit.text()
                 self.parent_wnd.model_json.model.annotation_dataset_path = self.json_annotationdataset_edit.text()
@@ -549,8 +657,8 @@ class ModelJsonView(QWidget):
                 self.parent_wnd.model_json.model.yolo_dataset_path = self.json_yolodataset_edit.text()
                 self.parent_wnd.model_json.model.model_classes = list(self.json_classes_edit.text())
                 self.parent_wnd.model_json.model.train_epochs = self.json_epochs_edit.value()
-                self.parent_wnd.model_json.model.image_height = 128
-                self.parent_wnd.model_json.model.image_width = 128
+                self.parent_wnd.model_json.model.image_height = img_h
+                self.parent_wnd.model_json.model.image_width = img_w
 
             if self.parent_wnd.model_json.save_to_file(self.json_filename_edit.text()):
                 QMessageBox.information(self, "Sucesso", "Arquivo JSON salvo com sucesso!")
